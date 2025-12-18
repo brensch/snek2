@@ -45,9 +45,7 @@ func StateToBytes(state *pb.GameState) *[]byte {
 	data := *dataPtr
 
 	// Zero out the buffer (important since we reuse it)
-	for i := range data {
-		data[i] = 0
-	}
+	clear(data)
 
 	// Helper to set float value at (c, y, x)
 	// We use (y, x) to match standard image conventions (Height, Width)
@@ -99,10 +97,11 @@ func StateToBytes(state *pb.GameState) *[]byte {
 
 		// Health (Plane)
 		healthVal := float32(s.Health) / 100.0
-		for y := 0; y < Height; y++ {
-			for x := 0; x < Width; x++ {
-				set(baseCh+3, x, y, healthVal)
-			}
+		healthBits := math.Float32bits(healthVal)
+		startIdx := (baseCh + 3) * Height * Width * BytesPerFloat
+		endIdx := startIdx + (Height * Width * BytesPerFloat)
+		for i := startIdx; i < endIdx; i += 4 {
+			binary.LittleEndian.PutUint32(data[i:], healthBits)
 		}
 	}
 

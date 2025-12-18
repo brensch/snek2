@@ -1,8 +1,6 @@
 package mcts
 
 import (
-	"sync"
-
 	pb "github.com/brensch/snek2/gen/go"
 )
 
@@ -11,12 +9,12 @@ type Move int
 
 // Node represents a state in the MCTS tree
 type Node struct {
-	mu         sync.Mutex
 	VisitCount int
 	ValueSum   float32
 	PriorProb  float32
-	Children   map[Move]*Node
+	Children   [4]*Node
 	State      *pb.GameState
+	IsExpanded bool
 }
 
 // NewNode creates a new MCTS node
@@ -24,7 +22,6 @@ func NewNode(state *pb.GameState, prior float32) *Node {
 	return &Node{
 		State:     state,
 		PriorProb: prior,
-		Children:  make(map[Move]*Node),
 	}
 }
 

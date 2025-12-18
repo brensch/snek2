@@ -1,0 +1,37 @@
+{
+    "version": "2.0.0",
+    "tasks": [
+        {
+            "label": "Run Python Server",
+            "type": "shell",
+            "command": "make run-py",
+            "presentation": {
+                "group": "snek",
+                "reveal": "always",
+                "panel": "split"
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Go Worker",
+            "type": "shell",
+            "command": "make run-go",
+            "presentation": {
+                "group": "snek",
+                "reveal": "always",
+                "panel": "split"
+            },
+            "problemMatcher": []
+        },
+        {
+            "label": "Run All",
+            "dependsOn": ["Run Python Server", "Run Go Worker"],
+            "problemMatcher": [],
+            "group": {
+                "kind": "build",
+                "isDefault": true
+            }
+        }
+    ]
+}

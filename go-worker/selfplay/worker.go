@@ -19,7 +19,7 @@ type GameResult struct {
 	Steps    int
 }
 
-func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceClient, verbose bool) ([]*pb.TrainingExample, GameResult) {
+func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceClient, verbose bool, onStep func()) ([]*pb.TrainingExample, GameResult) {
 	// rng := rand.New(rand.NewSource(time.Now().UnixNano())) // Unused
 	state := createInitialState()
 
@@ -46,7 +46,7 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceCl
 
 		moves := make(map[string]int)
 		var movesMu sync.Mutex
-		
+
 		policies := make(map[string][]float32)
 		var policiesMu sync.Mutex
 
@@ -82,7 +82,9 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceCl
 				policy := make([]float32, 4)
 				totalVisits := 0
 				for _, child := range root.Children {
-					totalVisits += child.VisitCount
+					if child != nil {
+						totalVisits += child.VisitCount
+					}
 				}
 
 				// If no valid moves found (e.g. trapped), pick a default
@@ -94,7 +96,7 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceCl
 				}
 
 				for move, child := range root.Children {
-					if int(move) < len(policy) {
+					if child != nil && int(move) < len(policy) {
 						policy[int(move)] = float32(child.VisitCount) / float32(totalVisits)
 					}
 				}
@@ -105,13 +107,13 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceCl
 				// For simplicity, let's just use the shared one with a lock, or create a new one.
 				// Creating a new one is safer for concurrency.
 				localRng := rand.New(rand.NewSource(time.Now().UnixNano()))
-				
+
 				if localState.Turn < 10 {
 					move = sampleMove(localRng, policy)
 				} else {
 					move = argmax(policy)
 				}
-				
+
 				movesMu.Lock()
 				moves[s.Id] = move
 				movesMu.Unlock()
@@ -159,6 +161,10 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceCl
 			policies:  stepPolicies,
 			snakes:    stepSnakeIDs,
 		})
+
+		if onStep != nil {
+			onStep()
+		}
 
 		// Advance State Simultaneously
 		state = rules.NextStateSimultaneous(state, moves)

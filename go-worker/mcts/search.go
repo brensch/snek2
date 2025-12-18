@@ -25,14 +25,20 @@ func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, int, err
 		path := []*Node{node}
 
 		// Selection
-		for len(node.Children) > 0 {
+		for node.IsExpanded {
 			bestMove := Move(-1)
 			bestScore := float32(-1e9)
 
 			// Calculate sqrt(sum(N)) for parent
 			sqrtSumN := float32(math.Sqrt(float64(node.VisitCount)))
 
-			for move, child := range node.Children {
+			for moveIdx := 0; moveIdx < 4; moveIdx++ {
+				move := Move(moveIdx)
+				child := node.Children[move]
+				if child == nil {
+					continue
+				}
+
 				q := float32(0)
 				if child.VisitCount > 0 {
 					q = child.ValueSum / float32(child.VisitCount)
@@ -118,6 +124,7 @@ func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, int, err
 						child := NewNode(nextState, prob)
 						node.Children[move] = child
 					}
+					node.IsExpanded = true
 				}
 			}
 		}

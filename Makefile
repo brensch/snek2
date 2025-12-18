@@ -50,9 +50,7 @@ train: $(VENV_DIR)
 	$(PYTHON) py-inference/train.py
 
 run:
-	@echo "Starting Python Inference Server..."
-	@trap 'kill 0' EXIT; \
-	$(PYTHON) py-inference/server.py & \
-	sleep 2; \
-	echo "Starting Go Worker..."; \
-	go run ./go-worker
+	@echo "Starting Snek2 in tmux..."
+	tmux new-session -d -s snek '$(MAKE) run-py'
+	tmux split-window -h -t snek '$(MAKE) run-go'
+	tmux attach -t snek

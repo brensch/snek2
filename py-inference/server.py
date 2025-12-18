@@ -14,8 +14,8 @@ import snake_pb2_grpc
 from model import SnakeNet
 
 # Configuration
-BATCH_SIZE = 256
-MAX_WAIT_TIME = 0.010 # 10ms
+BATCH_SIZE = 4096
+MAX_WAIT_TIME = 0.001 # 1ms
 IN_CHANNELS = 17
 BOARD_WIDTH = 11
 BOARD_HEIGHT = 11
