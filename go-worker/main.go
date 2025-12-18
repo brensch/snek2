@@ -3,7 +3,9 @@ package main
 import (
 	"context"
 	"log"
+	"runtime"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	pb "github.com/brensch/snek2/gen/go"
@@ -12,54 +14,96 @@ import (
 )
 
 func main() {
-	conn, err := grpc.NewClient("localhost:50051", grpc.WithTransportCredentials(insecure.NewCredentials()))
+	// Use Unix Domain Socket
+	conn, err := grpc.NewClient("unix:///tmp/snek.sock", grpc.WithTransportCredentials(insecure.NewCredentials()))
 	if err != nil {
 		log.Fatalf("did not connect: %v", err)
 	}
 	defer conn.Close()
 	c := pb.NewInferenceServiceClient(conn)
 
-	// Create a dummy request
-	req := &pb.InferenceRequest{
-		States: []*pb.GameState{
+	// Create a dummy GameState
+	dummyState := &pb.GameState{
+		Width:  11,
+		Height: 11,
+		YouId:  "me",
+		Snakes: []*pb.Snake{
 			{
-				Width:  11,
-				Height: 11,
-				Snakes: []*pb.Snake{
-					{
-						Id:     "me",
-						Health: 100,
-						Body: []*pb.Point{
-							{X: 5, Y: 5},
-						},
-					},
+				Id:     "me",
+				Health: 90,
+				Body: []*pb.Point{
+					{X: 5, Y: 5}, // Head
+					{X: 5, Y: 4}, // Body
+					{X: 5, Y: 3}, // Tail
 				},
-				YouId: "me",
 			},
+			{
+				Id:     "enemy1",
+				Health: 80,
+				Body: []*pb.Point{
+					{X: 1, Y: 1},
+					{X: 1, Y: 2},
+				},
+			},
+		},
+		Food: []*pb.Point{
+			{X: 8, Y: 8},
 		},
 	}
 
-	var wg sync.WaitGroup
-	numRequests := 10000
+	// Load test configuration
+	duration := 30 * time.Second
+	workers := runtime.NumCPU() * 20 // High concurrency
 
-	log.Printf("Sending %d concurrent requests...", numRequests)
+	var wg sync.WaitGroup
+	var requestCount int64
+	var errorCount int64
+
+	log.Printf("Starting load test: %d workers (CPUs: %d), %v duration", workers, runtime.NumCPU(), duration)
 	start := time.Now()
 
-	for i := 0; i < numRequests; i++ {
-		wg.Add(1)
-		go func(id int) {
-			defer wg.Done()
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+	ctx, cancel := context.WithTimeout(context.Background(), duration)
+	defer cancel()
 
-			_, err := c.Predict(ctx, req)
-			if err != nil {
-				log.Printf("Request %d failed: %v", id, err)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+					// Serialize state (simulating work)
+					dataPtr := StateToBytes(dummyState)
+
+					req := &pb.InferenceRequest{
+						Data:  *dataPtr,
+						Shape: []int32{int32(Channels), int32(Width), int32(Height)},
+					}
+
+					// Use a short timeout for individual requests to fail fast if overloaded
+					reqCtx, reqCancel := context.WithTimeout(context.Background(), 1*time.Second)
+					_, err := c.Predict(reqCtx, req)
+					reqCancel()
+
+					PutBuffer(dataPtr)
+
+					if err != nil {
+						atomic.AddInt64(&errorCount, 1)
+					} else {
+						atomic.AddInt64(&requestCount, 1)
+					}
+				}
 			}
-		}(i)
+		}()
 	}
 
 	wg.Wait()
 	elapsed := time.Since(start)
-	log.Printf("All %d requests finished in %v", numRequests, elapsed)
+
+	log.Printf("Load test finished in %v", elapsed)
+	log.Printf("Total Requests: %d", requestCount)
+	log.Printf("Total Errors: %d", errorCount)
+	log.Printf("RPS: %.2f", float64(requestCount)/elapsed.Seconds())
 }

@@ -44,7 +44,7 @@ run-py: $(VENV_DIR)
 	$(PYTHON) py-inference/server.py
 
 run-go:
-	go run go-worker/main.go
+	go run ./go-worker
 
 run:
 	@echo "Starting Python Inference Server..."
@@ -52,4 +52,4 @@ run:
 	$(PYTHON) py-inference/server.py & \
 	sleep 2; \
 	echo "Starting Go Worker..."; \
-	go run go-worker/main.go
+	go run ./go-worker

@@ -25,7 +25,8 @@ message GameState {
 }
 
 message InferenceRequest {
-  repeated GameState states = 1;
+  bytes data = 1;
+  repeated int32 shape = 2;
 }
 
 // Represents the prediction for a single GameState

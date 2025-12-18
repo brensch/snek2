@@ -219,7 +219,8 @@ func (x *GameState) GetTurn() int32 {
 
 type InferenceRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	States        []*GameState           `protobuf:"bytes,1,rep,name=states,proto3" json:"states,omitempty"`
+	Data          []byte                 `protobuf:"bytes,1,opt,name=data,proto3" json:"data,omitempty"`
+	Shape         []int32                `protobuf:"varint,2,rep,packed,name=shape,proto3" json:"shape,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -254,9 +255,16 @@ func (*InferenceRequest) Descriptor() ([]byte, []int) {
 	return file_snake_proto_rawDescGZIP(), []int{3}
 }
 
-func (x *InferenceRequest) GetStates() []*GameState {
+func (x *InferenceRequest) GetData() []byte {
 	if x != nil {
-		return x.States
+		return x.Data
+	}
+	return nil
+}
+
+func (x *InferenceRequest) GetShape() []int32 {
+	if x != nil {
+		return x.Shape
 	}
 	return nil
 }
@@ -379,8 +387,9 @@ const file_snake_proto_rawDesc = "" +
 	"\x04food\x18\x04 \x03(\v2\f.snake.PointR\x04food\x12\x15\n" +
 	"\x06you_id\x18\x05 \x01(\tR\x05youId\x12\x12\n" +
 	"\x04turn\x18\x06 \x01(\x05R\x04turn\"<\n" +
-	"\x10InferenceRequest\x12(\n" +
-	"\x06states\x18\x01 \x03(\v2\x10.snake.GameStateR\x06states\"A\n" +
+	"\x10InferenceRequest\x12\x12\n" +
+	"\x04data\x18\x01 \x01(\fR\x04data\x12\x14\n" +
+	"\x05shape\x18\x02 \x03(\x05R\x05shape\"A\n" +
 	"\x11InferenceResponse\x12\x16\n" +
 	"\x06policy\x18\x01 \x03(\x02R\x06policy\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x02R\x05value\"P\n" +
@@ -414,15 +423,14 @@ var file_snake_proto_depIdxs = []int32{
 	0, // 0: snake.Snake.body:type_name -> snake.Point
 	1, // 1: snake.GameState.snakes:type_name -> snake.Snake
 	0, // 2: snake.GameState.food:type_name -> snake.Point
-	2, // 3: snake.InferenceRequest.states:type_name -> snake.GameState
-	4, // 4: snake.BatchInferenceResponse.responses:type_name -> snake.InferenceResponse
-	3, // 5: snake.InferenceService.Predict:input_type -> snake.InferenceRequest
-	5, // 6: snake.InferenceService.Predict:output_type -> snake.BatchInferenceResponse
-	6, // [6:7] is the sub-list for method output_type
-	5, // [5:6] is the sub-list for method input_type
-	5, // [5:5] is the sub-list for extension type_name
-	5, // [5:5] is the sub-list for extension extendee
-	0, // [0:5] is the sub-list for field type_name
+	4, // 3: snake.BatchInferenceResponse.responses:type_name -> snake.InferenceResponse
+	3, // 4: snake.InferenceService.Predict:input_type -> snake.InferenceRequest
+	5, // 5: snake.InferenceService.Predict:output_type -> snake.BatchInferenceResponse
+	5, // [5:6] is the sub-list for method output_type
+	4, // [4:5] is the sub-list for method input_type
+	4, // [4:4] is the sub-list for extension type_name
+	4, // [4:4] is the sub-list for extension extendee
+	0, // [0:4] is the sub-list for field type_name
 }
 
 func init() { file_snake_proto_init() }

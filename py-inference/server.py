@@ -15,8 +15,8 @@ from model import SnakeNet
 
 # Configuration
 BATCH_SIZE = 256
-MAX_WAIT_TIME = 0.005 # 5ms
-IN_CHANNELS = 3
+MAX_WAIT_TIME = 0.020 # 20ms
+IN_CHANNELS = 17
 BOARD_WIDTH = 11
 BOARD_HEIGHT = 11
 
@@ -85,11 +85,26 @@ class InferenceService(snake_pb2_grpc.InferenceServiceServicer):
         self.batch_manager = batch_manager
 
     async def Predict(self, request, context):
+        # Create tensor from raw bytes
+        # request.data is a flat byte array
+        # request.shape is the shape of a single board state (e.g. [17, 11, 11])
+        data_array = np.frombuffer(request.data, dtype=np.float32).copy()
+        
+        # Reshape to (BatchSize, *Shape)
+        shape = tuple(request.shape)
+        if not shape:
+            # Fallback or error if shape is missing
+            # Assuming standard shape if not provided, or raise error
+            # For now let's assume it's provided as per requirements
+            pass
+            
+        tensor = torch.from_numpy(data_array).reshape(-1, *shape)
+        
         futures = []
-        for state in request.states:
-            tensor = state_to_tensor(state)
+        for i in range(tensor.shape[0]):
+            sub_tensor = tensor[i]
             future = self.batch_manager.loop.create_future()
-            await self.batch_manager.queue.put((tensor, future))
+            await self.batch_manager.queue.put((sub_tensor, future))
             futures.append(future)
             
         results = await asyncio.gather(*futures)
@@ -117,8 +132,11 @@ async def serve():
     
     server = grpc.aio.server()
     snake_pb2_grpc.add_InferenceServiceServicer_to_server(InferenceService(batch_manager), server)
-    server.add_insecure_port('[::]:50051')
-    print("Inference Server started on port 50051")
+    
+    # Use Unix Domain Socket for faster local communication
+    socket_path = 'unix:///tmp/snek.sock'
+    server.add_insecure_port(socket_path)
+    print(f"Inference Server started on {socket_path}")
     await server.start()
     
     try:

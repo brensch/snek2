@@ -41,10 +41,12 @@ class GameState(_message.Message):
     def __init__(self, width: _Optional[int] = ..., height: _Optional[int] = ..., snakes: _Optional[_Iterable[_Union[Snake, _Mapping]]] = ..., food: _Optional[_Iterable[_Union[Point, _Mapping]]] = ..., you_id: _Optional[str] = ..., turn: _Optional[int] = ...) -> None: ...
 
 class InferenceRequest(_message.Message):
-    __slots__ = ("states",)
-    STATES_FIELD_NUMBER: _ClassVar[int]
-    states: _containers.RepeatedCompositeFieldContainer[GameState]
-    def __init__(self, states: _Optional[_Iterable[_Union[GameState, _Mapping]]] = ...) -> None: ...
+    __slots__ = ("data", "shape")
+    DATA_FIELD_NUMBER: _ClassVar[int]
+    SHAPE_FIELD_NUMBER: _ClassVar[int]
+    data: bytes
+    shape: _containers.RepeatedScalarFieldContainer[int]
+    def __init__(self, data: _Optional[bytes] = ..., shape: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class InferenceResponse(_message.Message):
     __slots__ = ("policy", "value")
