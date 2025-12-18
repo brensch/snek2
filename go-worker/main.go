@@ -9,6 +9,7 @@ import (
 	"time"
 
 	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/go-worker/convert"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
@@ -75,11 +76,11 @@ func main() {
 					return
 				default:
 					// Serialize state (simulating work)
-					dataPtr := StateToBytes(dummyState)
+					dataPtr := convert.StateToBytes(dummyState)
 
 					req := &pb.InferenceRequest{
 						Data:  *dataPtr,
-						Shape: []int32{int32(Channels), int32(Width), int32(Height)},
+						Shape: []int32{int32(convert.Channels), int32(convert.Width), int32(convert.Height)},
 					}
 
 					// Use a short timeout for individual requests to fail fast if overloaded
@@ -87,7 +88,7 @@ func main() {
 					_, err := c.Predict(reqCtx, req)
 					reqCancel()
 
-					PutBuffer(dataPtr)
+					convert.PutBuffer(dataPtr)
 
 					if err != nil {
 						atomic.AddInt64(&errorCount, 1)
