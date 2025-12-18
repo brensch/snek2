@@ -368,6 +368,66 @@ func (x *BatchInferenceResponse) GetResponses() []*InferenceResponse {
 	return nil
 }
 
+type TrainingExample struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	StateData     []byte                 `protobuf:"bytes,1,opt,name=state_data,json=stateData,proto3" json:"state_data,omitempty"`
+	PolicyTarget  []float32              `protobuf:"fixed32,2,rep,packed,name=policy_target,json=policyTarget,proto3" json:"policy_target,omitempty"`
+	ValueTarget   float32                `protobuf:"fixed32,3,opt,name=value_target,json=valueTarget,proto3" json:"value_target,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TrainingExample) Reset() {
+	*x = TrainingExample{}
+	mi := &file_snake_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TrainingExample) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TrainingExample) ProtoMessage() {}
+
+func (x *TrainingExample) ProtoReflect() protoreflect.Message {
+	mi := &file_snake_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TrainingExample.ProtoReflect.Descriptor instead.
+func (*TrainingExample) Descriptor() ([]byte, []int) {
+	return file_snake_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *TrainingExample) GetStateData() []byte {
+	if x != nil {
+		return x.StateData
+	}
+	return nil
+}
+
+func (x *TrainingExample) GetPolicyTarget() []float32 {
+	if x != nil {
+		return x.PolicyTarget
+	}
+	return nil
+}
+
+func (x *TrainingExample) GetValueTarget() float32 {
+	if x != nil {
+		return x.ValueTarget
+	}
+	return 0
+}
+
 var File_snake_proto protoreflect.FileDescriptor
 
 const file_snake_proto_rawDesc = "" +
@@ -394,7 +454,12 @@ const file_snake_proto_rawDesc = "" +
 	"\x06policy\x18\x01 \x03(\x02R\x06policy\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x02R\x05value\"P\n" +
 	"\x16BatchInferenceResponse\x126\n" +
-	"\tresponses\x18\x01 \x03(\v2\x18.snake.InferenceResponseR\tresponses2U\n" +
+	"\tresponses\x18\x01 \x03(\v2\x18.snake.InferenceResponseR\tresponses\"x\n" +
+	"\x0fTrainingExample\x12\x1d\n" +
+	"\n" +
+	"state_data\x18\x01 \x01(\fR\tstateData\x12#\n" +
+	"\rpolicy_target\x18\x02 \x03(\x02R\fpolicyTarget\x12!\n" +
+	"\fvalue_target\x18\x03 \x01(\x02R\vvalueTarget2U\n" +
 	"\x10InferenceService\x12A\n" +
 	"\aPredict\x12\x17.snake.InferenceRequest\x1a\x1d.snake.BatchInferenceResponseB!Z\x1fgithub.com/brensch/snek2/gen/gob\x06proto3"
 
@@ -410,7 +475,7 @@ func file_snake_proto_rawDescGZIP() []byte {
 	return file_snake_proto_rawDescData
 }
 
-var file_snake_proto_msgTypes = make([]protoimpl.MessageInfo, 6)
+var file_snake_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
 var file_snake_proto_goTypes = []any{
 	(*Point)(nil),                  // 0: snake.Point
 	(*Snake)(nil),                  // 1: snake.Snake
@@ -418,6 +483,7 @@ var file_snake_proto_goTypes = []any{
 	(*InferenceRequest)(nil),       // 3: snake.InferenceRequest
 	(*InferenceResponse)(nil),      // 4: snake.InferenceResponse
 	(*BatchInferenceResponse)(nil), // 5: snake.BatchInferenceResponse
+	(*TrainingExample)(nil),        // 6: snake.TrainingExample
 }
 var file_snake_proto_depIdxs = []int32{
 	0, // 0: snake.Snake.body:type_name -> snake.Point
@@ -444,7 +510,7 @@ func file_snake_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snake_proto_rawDesc), len(file_snake_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   6,
+			NumMessages:   7,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

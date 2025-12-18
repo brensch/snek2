@@ -24,7 +24,7 @@ _sym_db = _symbol_database.Default()
 
 
 
-DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bsnake.proto\x12\x05snake\"\x1d\n\x05Point\x12\t\n\x01x\x18\x01 \x01(\x05\x12\t\n\x01y\x18\x02 \x01(\x05\"?\n\x05Snake\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0e\n\x06health\x18\x02 \x01(\x05\x12\x1a\n\x04\x62ody\x18\x03 \x03(\x0b\x32\x0c.snake.Point\"\x82\x01\n\tGameState\x12\r\n\x05width\x18\x01 \x01(\x05\x12\x0e\n\x06height\x18\x02 \x01(\x05\x12\x1c\n\x06snakes\x18\x03 \x03(\x0b\x32\x0c.snake.Snake\x12\x1a\n\x04\x66ood\x18\x04 \x03(\x0b\x32\x0c.snake.Point\x12\x0e\n\x06you_id\x18\x05 \x01(\t\x12\x0c\n\x04turn\x18\x06 \x01(\x05\"/\n\x10InferenceRequest\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\r\n\x05shape\x18\x02 \x03(\x05\"2\n\x11InferenceResponse\x12\x0e\n\x06policy\x18\x01 \x03(\x02\x12\r\n\x05value\x18\x02 \x01(\x02\"E\n\x16\x42\x61tchInferenceResponse\x12+\n\tresponses\x18\x01 \x03(\x0b\x32\x18.snake.InferenceResponse2U\n\x10InferenceService\x12\x41\n\x07Predict\x12\x17.snake.InferenceRequest\x1a\x1d.snake.BatchInferenceResponseB!Z\x1fgithub.com/brensch/snek2/gen/gob\x06proto3')
+DESCRIPTOR = _descriptor_pool.Default().AddSerializedFile(b'\n\x0bsnake.proto\x12\x05snake\"\x1d\n\x05Point\x12\t\n\x01x\x18\x01 \x01(\x05\x12\t\n\x01y\x18\x02 \x01(\x05\"?\n\x05Snake\x12\n\n\x02id\x18\x01 \x01(\t\x12\x0e\n\x06health\x18\x02 \x01(\x05\x12\x1a\n\x04\x62ody\x18\x03 \x03(\x0b\x32\x0c.snake.Point\"\x82\x01\n\tGameState\x12\r\n\x05width\x18\x01 \x01(\x05\x12\x0e\n\x06height\x18\x02 \x01(\x05\x12\x1c\n\x06snakes\x18\x03 \x03(\x0b\x32\x0c.snake.Snake\x12\x1a\n\x04\x66ood\x18\x04 \x03(\x0b\x32\x0c.snake.Point\x12\x0e\n\x06you_id\x18\x05 \x01(\t\x12\x0c\n\x04turn\x18\x06 \x01(\x05\"/\n\x10InferenceRequest\x12\x0c\n\x04\x64\x61ta\x18\x01 \x01(\x0c\x12\r\n\x05shape\x18\x02 \x03(\x05\"2\n\x11InferenceResponse\x12\x0e\n\x06policy\x18\x01 \x03(\x02\x12\r\n\x05value\x18\x02 \x01(\x02\"E\n\x16\x42\x61tchInferenceResponse\x12+\n\tresponses\x18\x01 \x03(\x0b\x32\x18.snake.InferenceResponse\"R\n\x0fTrainingExample\x12\x12\n\nstate_data\x18\x01 \x01(\x0c\x12\x15\n\rpolicy_target\x18\x02 \x03(\x02\x12\x14\n\x0cvalue_target\x18\x03 \x01(\x02\x32U\n\x10InferenceService\x12\x41\n\x07Predict\x12\x17.snake.InferenceRequest\x1a\x1d.snake.BatchInferenceResponseB!Z\x1fgithub.com/brensch/snek2/gen/gob\x06proto3')
 
 _globals = globals()
 _builder.BuildMessageAndEnumDescriptors(DESCRIPTOR, _globals)
@@ -44,6 +44,8 @@ if not _descriptor._USE_C_DESCRIPTORS:
   _globals['_INFERENCERESPONSE']._serialized_end=350
   _globals['_BATCHINFERENCERESPONSE']._serialized_start=352
   _globals['_BATCHINFERENCERESPONSE']._serialized_end=421
-  _globals['_INFERENCESERVICE']._serialized_start=423
-  _globals['_INFERENCESERVICE']._serialized_end=508
+  _globals['_TRAININGEXAMPLE']._serialized_start=423
+  _globals['_TRAININGEXAMPLE']._serialized_end=505
+  _globals['_INFERENCESERVICE']._serialized_start=507
+  _globals['_INFERENCESERVICE']._serialized_end=592
 # @@protoc_insertion_point(module_scope)

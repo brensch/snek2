@@ -61,3 +61,13 @@ class BatchInferenceResponse(_message.Message):
     RESPONSES_FIELD_NUMBER: _ClassVar[int]
     responses: _containers.RepeatedCompositeFieldContainer[InferenceResponse]
     def __init__(self, responses: _Optional[_Iterable[_Union[InferenceResponse, _Mapping]]] = ...) -> None: ...
+
+class TrainingExample(_message.Message):
+    __slots__ = ("state_data", "policy_target", "value_target")
+    STATE_DATA_FIELD_NUMBER: _ClassVar[int]
+    POLICY_TARGET_FIELD_NUMBER: _ClassVar[int]
+    VALUE_TARGET_FIELD_NUMBER: _ClassVar[int]
+    state_data: bytes
+    policy_target: _containers.RepeatedScalarFieldContainer[float]
+    value_target: float
+    def __init__(self, state_data: _Optional[bytes] = ..., policy_target: _Optional[_Iterable[float]] = ..., value_target: _Optional[float] = ...) -> None: ...

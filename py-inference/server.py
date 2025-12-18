@@ -60,7 +60,7 @@ class BatchManager:
                 await self.run_inference(batch_items)
 
     async def run_inference(self, batch_items):
-        print(f"Processing batch of size: {len(batch_items)}")
+        # print(f"Processing batch of size: {len(batch_items)}")
         inputs = [item[0] for item in batch_items]
         futures = [item[1] for item in batch_items]
         

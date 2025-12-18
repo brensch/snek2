@@ -71,7 +71,7 @@ func TestSearch(t *testing.T) {
 	for _, child := range root.Children {
 		totalChildVisits += child.VisitCount
 	}
-	
+
 	if totalChildVisits != simulations-1 {
 		t.Errorf("Expected sum of child visits %d, got %d", simulations-1, totalChildVisits)
 	}

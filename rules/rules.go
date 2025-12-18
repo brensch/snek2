@@ -80,6 +80,7 @@ func isSafe(state *pb.GameState, p *pb.Point, myBody []*pb.Point) bool {
 
 // NextState returns the next state after applying a move for YouId
 // Note: This currently only moves "You". Enemies are static.
+// This is used primarily for MCTS expansion where we might not know enemy moves.
 func NextState(state *pb.GameState, move int) *pb.GameState {
 	// Deep copy state
 	newState := proto.Clone(state).(*pb.GameState)
@@ -126,7 +127,7 @@ func NextState(state *pb.GameState, move int) *pb.GameState {
 	// Update Body
 	newBody := []*pb.Point{newHead}
 	newBody = append(newBody, you.Body...)
-	
+
 	if ateFood {
 		you.Health = 100
 	} else {
@@ -139,6 +140,170 @@ func NextState(state *pb.GameState, move int) *pb.GameState {
 	you.Body = newBody
 
 	return newState
+}
+
+// NextStateSimultaneous advances the game state with moves for all snakes.
+func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameState {
+	newState := proto.Clone(state).(*pb.GameState)
+	newState.Turn++
+
+	// 1. Calculate potential new heads
+	newHeads := make(map[string]*pb.Point)
+	for _, s := range newState.Snakes {
+		if s.Health <= 0 {
+			continue
+		}
+		move, ok := moves[s.Id]
+		if !ok {
+			// If no move provided, snake dies (or stays still? let's say it dies/stops)
+			// For now, let's assume it moves Up if missing (or just dies)
+			// Better: treat as dying.
+			continue
+		}
+
+		head := s.Body[0]
+		newHead := &pb.Point{X: head.X, Y: head.Y}
+		switch move {
+		case MoveUp:
+			newHead.Y++
+		case MoveDown:
+			newHead.Y--
+		case MoveLeft:
+			newHead.X--
+		case MoveRight:
+			newHead.X++
+		}
+		newHeads[s.Id] = newHead
+	}
+
+	// 2. Move bodies (tentatively)
+	// We need to track who ate food to know if they grow (tail stays)
+	eatenFood := make(map[int]bool) // index of food
+	snakeAte := make(map[string]bool)
+
+	for id, head := range newHeads {
+		for i, f := range newState.Food {
+			if f.X == head.X && f.Y == head.Y {
+				eatenFood[i] = true
+				snakeAte[id] = true
+			}
+		}
+	}
+
+	// Remove eaten food
+	remainingFood := []*pb.Point{}
+	for i, f := range newState.Food {
+		if !eatenFood[i] {
+			remainingFood = append(remainingFood, f)
+		}
+	}
+	newState.Food = remainingFood
+
+	// Update bodies
+	for _, s := range newState.Snakes {
+		newHead, ok := newHeads[s.Id]
+		if !ok {
+			s.Health = 0 // No move = dead
+			continue
+		}
+
+		newBody := []*pb.Point{newHead}
+		newBody = append(newBody, s.Body...)
+		
+		if snakeAte[s.Id] {
+			s.Health = 100
+		} else {
+			s.Health--
+			if len(newBody) > 0 {
+				newBody = newBody[:len(newBody)-1]
+			}
+		}
+		s.Body = newBody
+	}
+
+	// 3. Check Collisions (Death Logic)
+	// We need to mark snakes as dead.
+	deadSnakes := make(map[string]bool)
+
+	for _, s := range newState.Snakes {
+		if s.Health <= 0 {
+			deadSnakes[s.Id] = true
+			continue
+		}
+		head := s.Body[0]
+
+		// Wall Collision
+		if head.X < 0 || head.X >= newState.Width || head.Y < 0 || head.Y >= newState.Height {
+			deadSnakes[s.Id] = true
+			continue
+		}
+
+		// Body Collision (Self and Others)
+		for _, other := range newState.Snakes {
+			if other.Health <= 0 { continue } // Don't collide with already dead snakes? 
+			// Actually, in Battlesnake, you collide with the body they *had* or *have*?
+			// Standard: You collide with the body segments that exist AFTER the move.
+			
+			for i, p := range other.Body {
+				if i == 0 && s.Id == other.Id { continue } // Skip own head
+				if i == 0 && s.Id != other.Id { 
+					// Head-to-Head handled later
+					continue 
+				}
+				if p.X == head.X && p.Y == head.Y {
+					deadSnakes[s.Id] = true
+				}
+			}
+		}
+	}
+
+	// Head-to-Head Collision
+	for i := 0; i < len(newState.Snakes); i++ {
+		s1 := newState.Snakes[i]
+		if deadSnakes[s1.Id] { continue }
+
+		for j := i + 1; j < len(newState.Snakes); j++ {
+			s2 := newState.Snakes[j]
+			if deadSnakes[s2.Id] { continue }
+
+			if s1.Body[0].X == s2.Body[0].X && s1.Body[0].Y == s2.Body[0].Y {
+				// Collision!
+				if len(s1.Body) > len(s2.Body) {
+					deadSnakes[s2.Id] = true
+				} else if len(s2.Body) > len(s1.Body) {
+					deadSnakes[s1.Id] = true
+				} else {
+					deadSnakes[s1.Id] = true
+					deadSnakes[s2.Id] = true
+				}
+			}
+		}
+	}
+
+	// Apply Death
+	finalSnakes := []*pb.Snake{}
+	for _, s := range newState.Snakes {
+		if deadSnakes[s.Id] {
+			s.Health = 0
+			s.Body = []*pb.Point{} // Clear body? Or keep it? Standard is remove.
+		} else {
+			finalSnakes = append(finalSnakes, s)
+		}
+	}
+	newState.Snakes = finalSnakes
+
+	return newState
+}
+
+// IsGameOver returns true if the game is over (0 or 1 snake left)
+func IsGameOver(state *pb.GameState) bool {
+	living := 0
+	for _, s := range state.Snakes {
+		if s.Health > 0 {
+			living++
+		}
+	}
+	return living <= 1
 }
 
 // IsTerminal returns true if the game is over for You

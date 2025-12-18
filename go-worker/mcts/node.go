@@ -1,6 +1,8 @@
 package mcts
 
 import (
+	"sync"
+
 	pb "github.com/brensch/snek2/gen/go"
 )
 
@@ -9,6 +11,7 @@ type Move int
 
 // Node represents a state in the MCTS tree
 type Node struct {
+	mu         sync.Mutex
 	VisitCount int
 	ValueSum   float32
 	PriorProb  float32
