@@ -1,0 +1,7 @@
+[MASTER]
+init-hook='import sys; sys.path.append("./gen/python")'
+
+[TYPECHECK]
+# List of members which are set dynamically and missed by pylint inference
+# system, and so shouldn't trigger E1101 when accessed.
+generated-members=snake_pb2.*,snake_pb2_grpc.*
