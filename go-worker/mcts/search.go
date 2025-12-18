@@ -1,12 +1,10 @@
 package mcts
 
 import (
-	"context"
 	"math"
 	"sort"
 
 	pb "github.com/brensch/snek2/gen/go"
-	"github.com/brensch/snek2/go-worker/convert"
 	"github.com/brensch/snek2/rules"
 )
 
@@ -69,63 +67,50 @@ func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, int, err
 			value = rules.GetResult(node.State)
 		} else {
 			// Inference
-			dataPtr := convert.StateToBytes(node.State)
-
-			req := &pb.InferenceRequest{
-				Data:  *dataPtr,
-				Shape: []int32{int32(convert.Channels), int32(convert.Height), int32(convert.Width)},
-			}
-
-			resp, err := m.Client.Predict(context.Background(), req)
-			convert.PutBuffer(dataPtr) // Return buffer to pool
+			policies, values, err := m.Client.Predict(node.State)
 			if err != nil {
 				return nil, 0, err
 			}
 
-			// We assume the server returns one response for our one request
-			if len(resp.Responses) > 0 {
-				infResp := resp.Responses[0]
+			// Find index of YouId in sorted snakes to match model output
+			ids := make([]string, len(node.State.Snakes))
+			for i, s := range node.State.Snakes {
+				ids[i] = s.Id
+			}
+			sort.Strings(ids)
 
-				// Find index of YouId in sorted snakes to match model output
-				ids := make([]string, len(node.State.Snakes))
-				for i, s := range node.State.Snakes {
-					ids[i] = s.Id
+			myIndex := -1
+			for i, id := range ids {
+				if id == node.State.YouId {
+					myIndex = i
+					break
 				}
-				sort.Strings(ids)
+			}
 
-				myIndex := -1
-				for i, id := range ids {
-					if id == node.State.YouId {
-						myIndex = i
-						break
-					}
+			if myIndex != -1 {
+				if myIndex < len(values) {
+					value = values[myIndex]
 				}
 
-				if myIndex != -1 {
-					if myIndex < len(infResp.Values) {
-						value = infResp.Values[myIndex]
+				// Expand
+				legalMoves := rules.GetLegalMoves(node.State)
+				for _, moveInt := range legalMoves {
+					move := Move(moveInt)
+
+					// Get probability from policy
+					prob := float32(0)
+					// Policy is flat array: [Snake0_Move0..3, Snake1_Move0..3, ...]
+					policyIdx := (myIndex * 4) + int(move)
+					if policyIdx < len(policies) {
+						prob = policies[policyIdx]
 					}
 
-					// Expand
-					legalMoves := rules.GetLegalMoves(node.State)
-					for _, moveInt := range legalMoves {
-						move := Move(moveInt)
-
-						// Get probability from policy
-						prob := float32(0)
-						// Policy is flat array: [Snake0_Move0..3, Snake1_Move0..3, ...]
-						policyIdx := (myIndex * 4) + int(move)
-						if policyIdx < len(infResp.Policies) {
-							prob = infResp.Policies[policyIdx]
-						}
-
-						// Create child
-						nextState := rules.NextState(node.State, int(move))
-						child := NewNode(nextState, prob)
-						node.Children[move] = child
-					}
-					node.IsExpanded = true
+					// Create child
+					nextState := rules.NextState(node.State, int(move))
+					child := NewNode(nextState, prob)
+					node.Children[move] = child
 				}
+				node.IsExpanded = true
 			}
 		}
 

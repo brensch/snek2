@@ -30,8 +30,13 @@ type Config struct {
 	Cpuct float32
 }
 
+// Predictor defines the interface for inference
+type Predictor interface {
+	Predict(state *pb.GameState) ([]float32, []float32, error)
+}
+
 // MCTS holds the search context
 type MCTS struct {
 	Config Config
-	Client pb.InferenceServiceClient
+	Client Predictor
 }

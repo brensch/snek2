@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"fmt"
 	"log"
 	"os"
@@ -9,11 +8,10 @@ import (
 	"time"
 
 	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/go-worker/inference"
 	"github.com/brensch/snek2/go-worker/mcts"
 	"github.com/brensch/snek2/go-worker/selfplay"
 	tea "github.com/charmbracelet/bubbletea"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/protobuf/proto"
 )
 
@@ -21,12 +19,12 @@ var totalMoves atomic.Int64
 var totalInferences atomic.Int64
 
 type instrumentedClient struct {
-	pb.InferenceServiceClient
+	mcts.Predictor
 }
 
-func (c *instrumentedClient) Predict(ctx context.Context, in *pb.InferenceRequest, opts ...grpc.CallOption) (*pb.BatchInferenceResponse, error) {
+func (c *instrumentedClient) Predict(state *pb.GameState) ([]float32, []float32, error) {
 	totalInferences.Add(1)
-	return c.InferenceServiceClient.Predict(ctx, in, opts...)
+	return c.Predictor.Predict(state)
 }
 
 type GameUpdate struct {
@@ -124,46 +122,41 @@ func (m model) View() string {
 
 func main() {
 	// Redirect logs to file to avoid messing up TUI
-	f, err := os.OpenFile("worker.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	// f, err := os.OpenFile("worker.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
+	// if err != nil {
+	// 	log.Fatalf("error opening file: %v", err)
+	// }
+	// defer f.Close()
+	// log.SetOutput(f)
+
+	// Initialize ONNX Client
+	modelPath := "models/snake_net.onnx"
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		log.Fatalf("Model file not found: %s. Run export_onnx.py first.", modelPath)
+	}
+
+	onnxClient, err := inference.NewOnnxClient(modelPath)
 	if err != nil {
-		log.Fatalf("error opening file: %v", err)
+		log.Fatalf("Failed to create ONNX client: %v", err)
 	}
-	defer f.Close()
-	log.SetOutput(f)
+	defer onnxClient.Close()
 
-	// Use Unix Domain Socket
-	conn, err := grpc.NewClient("unix:///tmp/snek.sock", grpc.WithTransportCredentials(insecure.NewCredentials()))
-	if err != nil {
-		log.Fatalf("did not connect: %v", err)
-	}
-	defer conn.Close()
-	c := pb.NewInferenceServiceClient(conn)
-	c = &instrumentedClient{InferenceServiceClient: c}
+	// Wrap with instrumentation
+	var c mcts.Predictor = &instrumentedClient{Predictor: onnxClient}
 
-	// Wait for server to be ready
-	fmt.Println("Waiting for Python Inference Server...")
-	for {
-		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-		_, err := c.Predict(ctx, &pb.InferenceRequest{})
-		cancel()
-		if err == nil {
-			break
-		}
-		time.Sleep(500 * time.Millisecond)
-	}
-	fmt.Println("Server connected! Starting workers...")
+	fmt.Println("ONNX Client initialized! Starting workers...")
 
-	// We use Parallel Games now.
-	// Each worker runs sequential MCTS.
-	// The Inference Server batches requests from all workers.
-	// We use 4096 workers to perfectly fill the GPU batch size.
-	workers := 4096
+	// We use Parallel Games.
+	// Each worker runs sequential MCTS with local inference.
+	// 16 workers for 16 threads.
+	workers := 128
 	log.Printf("Starting Self-Play with %d workers", workers)
 
 	updates := make(chan GameUpdate, workers)
 
 	for i := 0; i < workers; i++ {
 		go func(workerId int) {
+			log.Printf("Worker %d started", workerId)
 			for {
 				// Run one game
 				// Disable verbose for TUI
@@ -190,9 +183,26 @@ func main() {
 		}(i)
 	}
 
-	p := tea.NewProgram(initialModel(updates), tea.WithAltScreen())
-	if _, err := p.Run(); err != nil {
-		log.Fatal(err)
+	// p := tea.NewProgram(initialModel(updates), tea.WithAltScreen())
+	// if _, err := p.Run(); err != nil {
+	// 	log.Fatal(err)
+	// }
+
+	// Temporary replacement for TUI to debug errors
+	startTime := time.Now()
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case update := <-updates:
+			log.Printf("Worker %d: Winner %s, Steps %d, Ex %d", update.WorkerID, update.Result.WinnerId, update.Result.Steps, update.Examples)
+		case <-ticker.C:
+			duration := time.Since(startTime)
+			moves := totalMoves.Load()
+			inferences := totalInferences.Load()
+			log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f", float64(moves)/duration.Seconds(), float64(inferences)/duration.Seconds())
+		}
 	}
 }
 

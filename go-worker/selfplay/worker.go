@@ -19,7 +19,7 @@ type GameResult struct {
 	Steps    int
 }
 
-func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceClient, verbose bool, onStep func()) ([]*pb.TrainingExample, GameResult) {
+func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, onStep func()) ([]*pb.TrainingExample, GameResult) {
 	// rng := rand.New(rand.NewSource(time.Now().UnixNano())) // Unused
 	state := createInitialState()
 
@@ -220,8 +220,8 @@ func createInitialState() *pb.GameState {
 				Health: 100,
 				Body: []*pb.Point{
 					{X: 1, Y: 1},
-					{X: 1, Y: 1},
-					{X: 1, Y: 1},
+					{X: 1, Y: 2},
+					{X: 1, Y: 3},
 				},
 			},
 			{
@@ -229,8 +229,8 @@ func createInitialState() *pb.GameState {
 				Health: 100,
 				Body: []*pb.Point{
 					{X: 9, Y: 9},
-					{X: 9, Y: 9},
-					{X: 9, Y: 9},
+					{X: 9, Y: 10},
+					{X: 9, Y: 11},
 				},
 			},
 		},

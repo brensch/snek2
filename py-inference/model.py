@@ -51,7 +51,7 @@ class SnakeNet(nn.Module):
         
         # Policy Head
         p = F.relu(self.policy_bn(self.policy_conv(x)))
-        p = p.view(p.size(0), -1)
+        p = p.flatten(1)
         p = self.policy_fc(p)
         
         # Reshape to (Batch, 4, 4) to apply softmax per snake
@@ -61,7 +61,7 @@ class SnakeNet(nn.Module):
         
         # Value Head
         v = F.relu(self.value_bn(self.value_conv(x)))
-        v = v.view(v.size(0), -1)
+        v = v.flatten(1)
         v = F.relu(self.value_fc1(v))
         v = torch.tanh(self.value_fc2(v)) # Output -1 to 1
         

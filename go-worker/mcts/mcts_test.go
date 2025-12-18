@@ -1,17 +1,15 @@
 package mcts
 
 import (
-	"context"
 	"testing"
 
 	pb "github.com/brensch/snek2/gen/go"
-	"google.golang.org/grpc"
 )
 
-// MockInferenceClient mocks the InferenceServiceClient
+// MockInferenceClient mocks the Predictor interface
 type MockInferenceClient struct{}
 
-func (m *MockInferenceClient) Predict(ctx context.Context, in *pb.InferenceRequest, opts ...grpc.CallOption) (*pb.BatchInferenceResponse, error) {
+func (m *MockInferenceClient) Predict(state *pb.GameState) ([]float32, []float32, error) {
 	// Return a dummy response
 	// Policies: 16 floats (4 snakes * 4 moves)
 	// Values: 4 floats (1 value per snake)
@@ -21,14 +19,7 @@ func (m *MockInferenceClient) Predict(ctx context.Context, in *pb.InferenceReque
 	}
 	values := []float32{0.5, 0.5, 0.5, 0.5}
 
-	return &pb.BatchInferenceResponse{
-		Responses: []*pb.InferenceResponse{
-			{
-				Policies: policies,
-				Values:   values,
-			},
-		},
-	}, nil
+	return policies, values, nil
 }
 
 func TestSearch(t *testing.T) {

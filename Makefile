@@ -44,6 +44,7 @@ run-py: $(VENV_DIR)
 	$(PYTHON) py-inference/server.py
 
 run-go:
+	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
 	go run ./go-worker
 
 train: $(VENV_DIR)
