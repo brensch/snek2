@@ -209,7 +209,7 @@ func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameSt
 
 		newBody := []*pb.Point{newHead}
 		newBody = append(newBody, s.Body...)
-		
+
 		if snakeAte[s.Id] {
 			s.Health = 100
 		} else {
@@ -240,15 +240,19 @@ func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameSt
 
 		// Body Collision (Self and Others)
 		for _, other := range newState.Snakes {
-			if other.Health <= 0 { continue } // Don't collide with already dead snakes? 
+			if other.Health <= 0 {
+				continue
+			} // Don't collide with already dead snakes?
 			// Actually, in Battlesnake, you collide with the body they *had* or *have*?
 			// Standard: You collide with the body segments that exist AFTER the move.
-			
+
 			for i, p := range other.Body {
-				if i == 0 && s.Id == other.Id { continue } // Skip own head
-				if i == 0 && s.Id != other.Id { 
+				if i == 0 && s.Id == other.Id {
+					continue
+				} // Skip own head
+				if i == 0 && s.Id != other.Id {
 					// Head-to-Head handled later
-					continue 
+					continue
 				}
 				if p.X == head.X && p.Y == head.Y {
 					deadSnakes[s.Id] = true
@@ -260,11 +264,15 @@ func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameSt
 	// Head-to-Head Collision
 	for i := 0; i < len(newState.Snakes); i++ {
 		s1 := newState.Snakes[i]
-		if deadSnakes[s1.Id] { continue }
+		if deadSnakes[s1.Id] {
+			continue
+		}
 
 		for j := i + 1; j < len(newState.Snakes); j++ {
 			s2 := newState.Snakes[j]
-			if deadSnakes[s2.Id] { continue }
+			if deadSnakes[s2.Id] {
+				continue
+			}
 
 			if s1.Body[0].X == s2.Body[0].X && s1.Body[0].Y == s2.Body[0].Y {
 				// Collision!

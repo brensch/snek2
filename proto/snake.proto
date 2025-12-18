@@ -31,10 +31,11 @@ message InferenceRequest {
 
 // Represents the prediction for a single GameState
 message InferenceResponse {
-  // Probabilities for Up, Down, Left, Right (in that order)
-  repeated float policy = 1;
-  // Win probability (-1 to 1 or 0 to 1)
-  float value = 2;
+  // Probabilities for Up, Down, Left, Right for each snake (4 * 4 = 16 floats)
+  // Order: Snake 1 (U,D,L,R), Snake 2 (U,D,L,R), ...
+  repeated float policies = 1;
+  // Win probability for each snake (4 floats)
+  repeated float values = 2;
 }
 
 message BatchInferenceResponse {
@@ -43,8 +44,14 @@ message BatchInferenceResponse {
 
 message TrainingExample {
   bytes state_data = 1;
-  repeated float policy_target = 2;
-  float value_target = 3;
+  // 16 floats (4 snakes * 4 moves)
+  repeated float policies = 2;
+  // 4 floats (one value per snake)
+  repeated float values = 3;
+}
+
+message TrainingData {
+  repeated TrainingExample examples = 1;
 }
 
 service InferenceService {

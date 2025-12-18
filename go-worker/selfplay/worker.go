@@ -3,12 +3,15 @@ package selfplay
 import (
 	"log"
 	"math/rand"
+	"sort"
+	"sync"
 	"time"
 
 	pb "github.com/brensch/snek2/gen/go"
 	"github.com/brensch/snek2/go-worker/convert"
 	"github.com/brensch/snek2/go-worker/mcts"
 	"github.com/brensch/snek2/rules"
+	"google.golang.org/protobuf/proto"
 )
 
 type GameResult struct {
@@ -17,17 +20,18 @@ type GameResult struct {
 }
 
 func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceClient, verbose bool) ([]*pb.TrainingExample, GameResult) {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
+	// rng := rand.New(rand.NewSource(time.Now().UnixNano())) // Unused
 	state := createInitialState()
 
 	var examples []*pb.TrainingExample
 
 	type step struct {
 		stateData []byte
-		policy    []float32
-		playerId  string
+		policies  []float32
+		snakes    []string
 	}
 	var steps []step
+	// var stepsMu sync.Mutex // Not needed if we append in main thread
 
 	moveNames := []string{"Up", "Down", "Left", "Right"}
 
@@ -41,76 +45,120 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceCl
 		}
 
 		moves := make(map[string]int)
+		var movesMu sync.Mutex
 		
+		policies := make(map[string][]float32)
+		var policiesMu sync.Mutex
+
+		var wg sync.WaitGroup
+
 		// Iterate over all snakes to get their moves
-		// We use a loop index to avoid issues if state.Snakes changes order (though it shouldn't)
 		for _, snake := range state.Snakes {
 			if snake.Health <= 0 {
 				continue
 			}
 
-			// Set perspective for MCTS and Feature Extraction
-			state.YouId = snake.Id
+			wg.Add(1)
+			go func(s *pb.Snake) {
+				defer wg.Done()
 
-			// MCTS Search
-			mctsInstance := &mcts.MCTS{
-				Config: mctsConfig,
-				Client: client,
-			}
-			root, err := mctsInstance.Search(state, 800)
-			if err != nil {
-				// If inference fails, abort game
-				return nil, GameResult{WinnerId: "Error", Steps: int(state.Turn)}
-			}
+				// Deep copy state for this snake's perspective
+				// Important because we modify YouId
+				localState := proto.Clone(state).(*pb.GameState)
+				localState.YouId = s.Id
 
-			// Extract Policy
-			policy := make([]float32, 4)
-			totalVisits := 0
-			for _, child := range root.Children {
-				totalVisits += child.VisitCount
-			}
-
-			// If no valid moves found (e.g. trapped), pick a default
-			if totalVisits == 0 {
-				moves[snake.Id] = 0 // Default Up
-				continue
-			}
-
-			for move, child := range root.Children {
-				if int(move) < len(policy) {
-					policy[int(move)] = float32(child.VisitCount) / float32(totalVisits)
+				// MCTS Search
+				mctsInstance := &mcts.MCTS{
+					Config: mctsConfig,
+					Client: client,
 				}
-			}
-
-			// Select Move
-			var move int
-			if state.Turn < 10 {
-				move = sampleMove(rng, policy)
-			} else {
-				move = argmax(policy)
-			}
-			moves[snake.Id] = move
-
-			if verbose {
-				moveName := "Unknown"
-				if move >= 0 && move < len(moveNames) {
-					moveName = moveNames[move]
+				root, depth, err := mctsInstance.Search(localState, 800)
+				if err != nil {
+					log.Printf("MCTS Error: %v", err)
+					return
 				}
-				log.Printf("[Worker %d] Turn %d: %s chose %s (Visits: %d)", workerId, state.Turn, snake.Id, moveName, totalVisits)
-			}
 
-			// Record Step
-			stateBytesPtr := convert.StateToBytes(state)
-			stateBytes := make([]byte, len(*stateBytesPtr))
-			copy(stateBytes, *stateBytesPtr)
-			convert.PutBuffer(stateBytesPtr)
+				// Extract Policy
+				policy := make([]float32, 4)
+				totalVisits := 0
+				for _, child := range root.Children {
+					totalVisits += child.VisitCount
+				}
 
-			steps = append(steps, step{
-				stateData: stateBytes,
-				policy:    policy,
-				playerId:  snake.Id,
-			})
+				// If no valid moves found (e.g. trapped), pick a default
+				if totalVisits == 0 {
+					movesMu.Lock()
+					moves[s.Id] = 0 // Default Up
+					movesMu.Unlock()
+					return
+				}
+
+				for move, child := range root.Children {
+					if int(move) < len(policy) {
+						policy[int(move)] = float32(child.VisitCount) / float32(totalVisits)
+					}
+				}
+
+				// Select Move
+				var move int
+				// Use a local RNG or lock the shared one?
+				// For simplicity, let's just use the shared one with a lock, or create a new one.
+				// Creating a new one is safer for concurrency.
+				localRng := rand.New(rand.NewSource(time.Now().UnixNano()))
+				
+				if localState.Turn < 10 {
+					move = sampleMove(localRng, policy)
+				} else {
+					move = argmax(policy)
+				}
+				
+				movesMu.Lock()
+				moves[s.Id] = move
+				movesMu.Unlock()
+
+				policiesMu.Lock()
+				policies[s.Id] = policy
+				policiesMu.Unlock()
+
+				if verbose {
+					moveName := "Unknown"
+					if move >= 0 && move < len(moveNames) {
+						moveName = moveNames[move]
+					}
+					log.Printf("[Worker %d] Turn %d: %s chose %s (Visits: %d, Depth: %d)", workerId, localState.Turn, s.Id, moveName, totalVisits, depth)
+				}
+			}(snake)
 		}
+		wg.Wait()
+
+		// Record Step (Global)
+		sortedSnakes := make([]*pb.Snake, len(state.Snakes))
+		copy(sortedSnakes, state.Snakes)
+		sort.Slice(sortedSnakes, func(i, j int) bool {
+			return sortedSnakes[i].Id < sortedSnakes[j].Id
+		})
+
+		stepPolicies := make([]float32, 16)
+		stepSnakeIDs := make([]string, 4)
+
+		for i := 0; i < 4 && i < len(sortedSnakes); i++ {
+			s := sortedSnakes[i]
+			stepSnakeIDs[i] = s.Id
+			if p, ok := policies[s.Id]; ok {
+				copy(stepPolicies[i*4:], p)
+			}
+		}
+
+		stateBytesPtr := convert.StateToBytes(state)
+		stateBytes := make([]byte, len(*stateBytesPtr))
+		copy(stateBytes, *stateBytesPtr)
+		convert.PutBuffer(stateBytesPtr)
+
+		steps = append(steps, step{
+			stateData: stateBytes,
+			policies:  stepPolicies,
+			snakes:    stepSnakeIDs,
+		})
 
 		// Advance State Simultaneously
 		state = rules.NextStateSimultaneous(state, moves)
@@ -131,19 +179,24 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client pb.InferenceServiceCl
 
 	// Assign Values
 	for _, s := range steps {
-		value := float32(0)
-		if winnerId != "" {
-			if s.playerId == winnerId {
-				value = 1.0
-			} else {
-				value = -1.0
+		stepValues := make([]float32, 4)
+		for i, id := range s.snakes {
+			if id == "" {
+				continue
+			}
+			if winnerId != "" {
+				if id == winnerId {
+					stepValues[i] = 1.0
+				} else {
+					stepValues[i] = -1.0
+				}
 			}
 		}
-		
+
 		examples = append(examples, &pb.TrainingExample{
-			StateData:    s.stateData,
-			PolicyTarget: s.policy,
-			ValueTarget:  value,
+			StateData: s.stateData,
+			Policies:  s.policies,
+			Values:    stepValues,
 		})
 	}
 
@@ -161,8 +214,8 @@ func createInitialState() *pb.GameState {
 				Health: 100,
 				Body: []*pb.Point{
 					{X: 1, Y: 1},
-					{X: 1, Y: 2},
-					{X: 1, Y: 3},
+					{X: 1, Y: 1},
+					{X: 1, Y: 1},
 				},
 			},
 			{
@@ -170,8 +223,8 @@ func createInitialState() *pb.GameState {
 				Health: 100,
 				Body: []*pb.Point{
 					{X: 9, Y: 9},
-					{X: 9, Y: 8},
-					{X: 9, Y: 7},
+					{X: 9, Y: 9},
+					{X: 9, Y: 9},
 				},
 			},
 		},

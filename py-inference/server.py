@@ -15,7 +15,7 @@ from model import SnakeNet
 
 # Configuration
 BATCH_SIZE = 256
-MAX_WAIT_TIME = 0.020 # 20ms
+MAX_WAIT_TIME = 0.010 # 10ms
 IN_CHANNELS = 17
 BOARD_WIDTH = 11
 BOARD_HEIGHT = 11
@@ -112,8 +112,8 @@ class InferenceService(snake_pb2_grpc.InferenceServiceServicer):
         responses = []
         for policy, value in results:
             responses.append(snake_pb2.InferenceResponse(
-                policy=policy.tolist(),
-                value=value.item()
+                policies=policy.tolist(),
+                values=value.tolist()
             ))
             
         return snake_pb2.BatchInferenceResponse(responses=responses)
@@ -123,6 +123,14 @@ async def serve():
     print(f"Using device: {device}")
     
     model = SnakeNet(in_channels=IN_CHANNELS, width=BOARD_WIDTH, height=BOARD_HEIGHT).to(device)
+    
+    model_path = "models/latest.pt"
+    if os.path.exists(model_path):
+        print(f"Loading model from {model_path}")
+        model.load_state_dict(torch.load(model_path, map_location=device))
+    else:
+        print("No existing model found, starting from scratch.")
+
     model.eval()
     
     batch_manager = BatchManager(model, device)

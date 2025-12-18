@@ -3,7 +3,7 @@ package mcts
 import (
 	"context"
 	"math"
-	"sync"
+	"sort"
 
 	pb "github.com/brensch/snek2/gen/go"
 	"github.com/brensch/snek2/go-worker/convert"
@@ -12,154 +12,122 @@ import (
 
 const (
 	VirtualLoss = float32(1.0)
-	BatchSize   = 256
+	BatchSize   = 16
 )
 
 // Search runs the MCTS simulations
-func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, error) {
+func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, int, error) {
 	root := NewNode(rootState, 1.0)
+	maxDepth := 0
 
-	for i := 0; i < simulations; i += BatchSize {
-		currentBatchSize := BatchSize
-		if i+BatchSize > simulations {
-			currentBatchSize = simulations - i
-		}
+	for i := 0; i < simulations; i++ {
+		node := root
+		path := []*Node{node}
 
-		var wg sync.WaitGroup
-		leaves := make([]*Node, currentBatchSize)
-		paths := make([][]*Node, currentBatchSize)
+		// Selection
+		for len(node.Children) > 0 {
+			bestMove := Move(-1)
+			bestScore := float32(-1e9)
 
-		// 1. Selection (Parallel)
-		for j := 0; j < currentBatchSize; j++ {
-			wg.Add(1)
-			go func(idx int) {
-				defer wg.Done()
-				node := root
-				path := []*Node{node}
+			// Calculate sqrt(sum(N)) for parent
+			sqrtSumN := float32(math.Sqrt(float64(node.VisitCount)))
 
-				for {
-					node.mu.Lock()
-					if len(node.Children) == 0 {
-						// Leaf
-						node.VisitCount++
-						node.ValueSum -= VirtualLoss
-						node.mu.Unlock()
-						break
-					}
-
-					bestMove := Move(-1)
-					bestScore := float32(-1e9)
-					sqrtSumN := float32(math.Sqrt(float64(node.VisitCount)))
-
-					for move, child := range node.Children {
-						q := float32(0)
-						if child.VisitCount > 0 {
-							q = child.ValueSum / float32(child.VisitCount)
-						}
-						u := q + m.Config.Cpuct*child.PriorProb*sqrtSumN/(1+float32(child.VisitCount))
-
-						if u > bestScore {
-							bestScore = u
-							bestMove = move
-						}
-					}
-
-					child := node.Children[bestMove]
-					// Apply Virtual Loss
-					child.VisitCount++
-					child.ValueSum -= VirtualLoss
-					
-					node.mu.Unlock()
-					
-					node = child
-					path = append(path, node)
+			for move, child := range node.Children {
+				q := float32(0)
+				if child.VisitCount > 0 {
+					q = child.ValueSum / float32(child.VisitCount)
 				}
-				leaves[idx] = node
-				paths[idx] = path
-			}(j)
-		}
-		wg.Wait()
 
-		// 2. Inference (Batched)
-		var inferenceIndices []int
-		var inferenceData []byte
-		
-		for j, leaf := range leaves {
-			if rules.IsTerminal(leaf.State) {
-				continue
+				// PUCT formula
+				// U(s,a) = Q(s,a) + C_puct * P(s,a) * sqrt(sum(N)) / (1 + N)
+				u := q + m.Config.Cpuct*child.PriorProb*sqrtSumN/(1+float32(child.VisitCount))
+
+				if u > bestScore {
+					bestScore = u
+					bestMove = move
+				}
 			}
-			
-			inferenceIndices = append(inferenceIndices, j)
-			dataPtr := convert.StateToBytes(leaf.State)
-			inferenceData = append(inferenceData, *dataPtr...)
-			convert.PutBuffer(dataPtr)
+
+			node = node.Children[bestMove]
+			path = append(path, node)
 		}
 
-		var responses []*pb.InferenceResponse
-		if len(inferenceIndices) > 0 {
+		if d := len(path) - 1; d > maxDepth {
+			maxDepth = d
+		}
+
+		// Expansion & Evaluation
+		value := float32(0)
+
+		if rules.IsTerminal(node.State) {
+			value = rules.GetResult(node.State)
+		} else {
+			// Inference
+			dataPtr := convert.StateToBytes(node.State)
+
 			req := &pb.InferenceRequest{
-				Data:  inferenceData,
+				Data:  *dataPtr,
 				Shape: []int32{int32(convert.Channels), int32(convert.Height), int32(convert.Width)},
 			}
+
 			resp, err := m.Client.Predict(context.Background(), req)
+			convert.PutBuffer(dataPtr) // Return buffer to pool
 			if err != nil {
-				return nil, err
+				return nil, 0, err
 			}
-			responses = resp.Responses
-		}
 
-		// 3. Expansion & Backprop
-		for j := 0; j < currentBatchSize; j++ {
-			leaf := leaves[j]
-			path := paths[j]
-			value := float32(0)
-			
-			// Check if this leaf was part of inference
-			infIdx := -1
-			for k, idx := range inferenceIndices {
-				if idx == j {
-					infIdx = k
-					break
+			// We assume the server returns one response for our one request
+			if len(resp.Responses) > 0 {
+				infResp := resp.Responses[0]
+
+				// Find index of YouId in sorted snakes to match model output
+				ids := make([]string, len(node.State.Snakes))
+				for i, s := range node.State.Snakes {
+					ids[i] = s.Id
 				}
-			}
+				sort.Strings(ids)
 
-			if infIdx != -1 {
-				// It was inferred
-				infResp := responses[infIdx]
-				value = infResp.Value
-				
-				leaf.mu.Lock()
-				if len(leaf.Children) == 0 {
-					// Expand
-					legalMoves := rules.GetLegalMoves(leaf.State)
-					for _, moveInt := range legalMoves {
-						move := Move(moveInt)
-						prob := float32(0)
-						if int(move) < len(infResp.Policy) {
-							prob = infResp.Policy[int(move)]
-						}
-						nextState := rules.NextState(leaf.State, int(move))
-						leaf.Children[move] = NewNode(nextState, prob)
+				myIndex := -1
+				for i, id := range ids {
+					if id == node.State.YouId {
+						myIndex = i
+						break
 					}
 				}
-				leaf.mu.Unlock()
-			} else {
-				// Terminal
-				value = rules.GetResult(leaf.State)
-			}
 
-			// Backprop
-			// Undo Virtual Loss and add Real Value
-			for _, n := range path {
-				n.mu.Lock()
-				// We added +1 visit, -1 value (VirtualLoss)
-				// Now we want: +1 visit (already done), +value
-				// So we add: value + VirtualLoss
-				n.ValueSum += value + VirtualLoss
-				n.mu.Unlock()
+				if myIndex != -1 {
+					if myIndex < len(infResp.Values) {
+						value = infResp.Values[myIndex]
+					}
+
+					// Expand
+					legalMoves := rules.GetLegalMoves(node.State)
+					for _, moveInt := range legalMoves {
+						move := Move(moveInt)
+
+						// Get probability from policy
+						prob := float32(0)
+						// Policy is flat array: [Snake0_Move0..3, Snake1_Move0..3, ...]
+						policyIdx := (myIndex * 4) + int(move)
+						if policyIdx < len(infResp.Policies) {
+							prob = infResp.Policies[policyIdx]
+						}
+
+						// Create child
+						nextState := rules.NextState(node.State, int(move))
+						child := NewNode(nextState, prob)
+						node.Children[move] = child
+					}
+				}
 			}
+		}
+
+		// Backpropagation
+		for _, n := range path {
+			n.VisitCount++
+			n.ValueSum += value
 		}
 	}
 
-	return root, nil
+	return root, maxDepth, nil
 }

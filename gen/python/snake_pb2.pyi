@@ -49,12 +49,12 @@ class InferenceRequest(_message.Message):
     def __init__(self, data: _Optional[bytes] = ..., shape: _Optional[_Iterable[int]] = ...) -> None: ...
 
 class InferenceResponse(_message.Message):
-    __slots__ = ("policy", "value")
-    POLICY_FIELD_NUMBER: _ClassVar[int]
-    VALUE_FIELD_NUMBER: _ClassVar[int]
-    policy: _containers.RepeatedScalarFieldContainer[float]
-    value: float
-    def __init__(self, policy: _Optional[_Iterable[float]] = ..., value: _Optional[float] = ...) -> None: ...
+    __slots__ = ("policies", "values")
+    POLICIES_FIELD_NUMBER: _ClassVar[int]
+    VALUES_FIELD_NUMBER: _ClassVar[int]
+    policies: _containers.RepeatedScalarFieldContainer[float]
+    values: _containers.RepeatedScalarFieldContainer[float]
+    def __init__(self, policies: _Optional[_Iterable[float]] = ..., values: _Optional[_Iterable[float]] = ...) -> None: ...
 
 class BatchInferenceResponse(_message.Message):
     __slots__ = ("responses",)
@@ -63,11 +63,17 @@ class BatchInferenceResponse(_message.Message):
     def __init__(self, responses: _Optional[_Iterable[_Union[InferenceResponse, _Mapping]]] = ...) -> None: ...
 
 class TrainingExample(_message.Message):
-    __slots__ = ("state_data", "policy_target", "value_target")
+    __slots__ = ("state_data", "policies", "values")
     STATE_DATA_FIELD_NUMBER: _ClassVar[int]
-    POLICY_TARGET_FIELD_NUMBER: _ClassVar[int]
-    VALUE_TARGET_FIELD_NUMBER: _ClassVar[int]
+    POLICIES_FIELD_NUMBER: _ClassVar[int]
+    VALUES_FIELD_NUMBER: _ClassVar[int]
     state_data: bytes
-    policy_target: _containers.RepeatedScalarFieldContainer[float]
-    value_target: float
-    def __init__(self, state_data: _Optional[bytes] = ..., policy_target: _Optional[_Iterable[float]] = ..., value_target: _Optional[float] = ...) -> None: ...
+    policies: _containers.RepeatedScalarFieldContainer[float]
+    values: _containers.RepeatedScalarFieldContainer[float]
+    def __init__(self, state_data: _Optional[bytes] = ..., policies: _Optional[_Iterable[float]] = ..., values: _Optional[_Iterable[float]] = ...) -> None: ...
+
+class TrainingData(_message.Message):
+    __slots__ = ("examples",)
+    EXAMPLES_FIELD_NUMBER: _ClassVar[int]
+    examples: _containers.RepeatedCompositeFieldContainer[TrainingExample]
+    def __init__(self, examples: _Optional[_Iterable[_Union[TrainingExample, _Mapping]]] = ...) -> None: ...

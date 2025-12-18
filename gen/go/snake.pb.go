@@ -272,10 +272,11 @@ func (x *InferenceRequest) GetShape() []int32 {
 // Represents the prediction for a single GameState
 type InferenceResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
-	// Probabilities for Up, Down, Left, Right (in that order)
-	Policy []float32 `protobuf:"fixed32,1,rep,packed,name=policy,proto3" json:"policy,omitempty"`
-	// Win probability (-1 to 1 or 0 to 1)
-	Value         float32 `protobuf:"fixed32,2,opt,name=value,proto3" json:"value,omitempty"`
+	// Probabilities for Up, Down, Left, Right for each snake (4 * 4 = 16 floats)
+	// Order: Snake 1 (U,D,L,R), Snake 2 (U,D,L,R), ...
+	Policies []float32 `protobuf:"fixed32,1,rep,packed,name=policies,proto3" json:"policies,omitempty"`
+	// Win probability for each snake (4 floats)
+	Values        []float32 `protobuf:"fixed32,2,rep,packed,name=values,proto3" json:"values,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -310,18 +311,18 @@ func (*InferenceResponse) Descriptor() ([]byte, []int) {
 	return file_snake_proto_rawDescGZIP(), []int{4}
 }
 
-func (x *InferenceResponse) GetPolicy() []float32 {
+func (x *InferenceResponse) GetPolicies() []float32 {
 	if x != nil {
-		return x.Policy
+		return x.Policies
 	}
 	return nil
 }
 
-func (x *InferenceResponse) GetValue() float32 {
+func (x *InferenceResponse) GetValues() []float32 {
 	if x != nil {
-		return x.Value
+		return x.Values
 	}
-	return 0
+	return nil
 }
 
 type BatchInferenceResponse struct {
@@ -369,10 +370,12 @@ func (x *BatchInferenceResponse) GetResponses() []*InferenceResponse {
 }
 
 type TrainingExample struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	StateData     []byte                 `protobuf:"bytes,1,opt,name=state_data,json=stateData,proto3" json:"state_data,omitempty"`
-	PolicyTarget  []float32              `protobuf:"fixed32,2,rep,packed,name=policy_target,json=policyTarget,proto3" json:"policy_target,omitempty"`
-	ValueTarget   float32                `protobuf:"fixed32,3,opt,name=value_target,json=valueTarget,proto3" json:"value_target,omitempty"`
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	StateData []byte                 `protobuf:"bytes,1,opt,name=state_data,json=stateData,proto3" json:"state_data,omitempty"`
+	// 16 floats (4 snakes * 4 moves)
+	Policies []float32 `protobuf:"fixed32,2,rep,packed,name=policies,proto3" json:"policies,omitempty"`
+	// 4 floats (one value per snake)
+	Values        []float32 `protobuf:"fixed32,3,rep,packed,name=values,proto3" json:"values,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -414,18 +417,62 @@ func (x *TrainingExample) GetStateData() []byte {
 	return nil
 }
 
-func (x *TrainingExample) GetPolicyTarget() []float32 {
+func (x *TrainingExample) GetPolicies() []float32 {
 	if x != nil {
-		return x.PolicyTarget
+		return x.Policies
 	}
 	return nil
 }
 
-func (x *TrainingExample) GetValueTarget() float32 {
+func (x *TrainingExample) GetValues() []float32 {
 	if x != nil {
-		return x.ValueTarget
+		return x.Values
 	}
-	return 0
+	return nil
+}
+
+type TrainingData struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Examples      []*TrainingExample     `protobuf:"bytes,1,rep,name=examples,proto3" json:"examples,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *TrainingData) Reset() {
+	*x = TrainingData{}
+	mi := &file_snake_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *TrainingData) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*TrainingData) ProtoMessage() {}
+
+func (x *TrainingData) ProtoReflect() protoreflect.Message {
+	mi := &file_snake_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use TrainingData.ProtoReflect.Descriptor instead.
+func (*TrainingData) Descriptor() ([]byte, []int) {
+	return file_snake_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *TrainingData) GetExamples() []*TrainingExample {
+	if x != nil {
+		return x.Examples
+	}
+	return nil
 }
 
 var File_snake_proto protoreflect.FileDescriptor
@@ -449,17 +496,19 @@ const file_snake_proto_rawDesc = "" +
 	"\x04turn\x18\x06 \x01(\x05R\x04turn\"<\n" +
 	"\x10InferenceRequest\x12\x12\n" +
 	"\x04data\x18\x01 \x01(\fR\x04data\x12\x14\n" +
-	"\x05shape\x18\x02 \x03(\x05R\x05shape\"A\n" +
-	"\x11InferenceResponse\x12\x16\n" +
-	"\x06policy\x18\x01 \x03(\x02R\x06policy\x12\x14\n" +
-	"\x05value\x18\x02 \x01(\x02R\x05value\"P\n" +
+	"\x05shape\x18\x02 \x03(\x05R\x05shape\"G\n" +
+	"\x11InferenceResponse\x12\x1a\n" +
+	"\bpolicies\x18\x01 \x03(\x02R\bpolicies\x12\x16\n" +
+	"\x06values\x18\x02 \x03(\x02R\x06values\"P\n" +
 	"\x16BatchInferenceResponse\x126\n" +
-	"\tresponses\x18\x01 \x03(\v2\x18.snake.InferenceResponseR\tresponses\"x\n" +
+	"\tresponses\x18\x01 \x03(\v2\x18.snake.InferenceResponseR\tresponses\"d\n" +
 	"\x0fTrainingExample\x12\x1d\n" +
 	"\n" +
-	"state_data\x18\x01 \x01(\fR\tstateData\x12#\n" +
-	"\rpolicy_target\x18\x02 \x03(\x02R\fpolicyTarget\x12!\n" +
-	"\fvalue_target\x18\x03 \x01(\x02R\vvalueTarget2U\n" +
+	"state_data\x18\x01 \x01(\fR\tstateData\x12\x1a\n" +
+	"\bpolicies\x18\x02 \x03(\x02R\bpolicies\x12\x16\n" +
+	"\x06values\x18\x03 \x03(\x02R\x06values\"B\n" +
+	"\fTrainingData\x122\n" +
+	"\bexamples\x18\x01 \x03(\v2\x16.snake.TrainingExampleR\bexamples2U\n" +
 	"\x10InferenceService\x12A\n" +
 	"\aPredict\x12\x17.snake.InferenceRequest\x1a\x1d.snake.BatchInferenceResponseB!Z\x1fgithub.com/brensch/snek2/gen/gob\x06proto3"
 
@@ -475,7 +524,7 @@ func file_snake_proto_rawDescGZIP() []byte {
 	return file_snake_proto_rawDescData
 }
 
-var file_snake_proto_msgTypes = make([]protoimpl.MessageInfo, 7)
+var file_snake_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_snake_proto_goTypes = []any{
 	(*Point)(nil),                  // 0: snake.Point
 	(*Snake)(nil),                  // 1: snake.Snake
@@ -484,19 +533,21 @@ var file_snake_proto_goTypes = []any{
 	(*InferenceResponse)(nil),      // 4: snake.InferenceResponse
 	(*BatchInferenceResponse)(nil), // 5: snake.BatchInferenceResponse
 	(*TrainingExample)(nil),        // 6: snake.TrainingExample
+	(*TrainingData)(nil),           // 7: snake.TrainingData
 }
 var file_snake_proto_depIdxs = []int32{
 	0, // 0: snake.Snake.body:type_name -> snake.Point
 	1, // 1: snake.GameState.snakes:type_name -> snake.Snake
 	0, // 2: snake.GameState.food:type_name -> snake.Point
 	4, // 3: snake.BatchInferenceResponse.responses:type_name -> snake.InferenceResponse
-	3, // 4: snake.InferenceService.Predict:input_type -> snake.InferenceRequest
-	5, // 5: snake.InferenceService.Predict:output_type -> snake.BatchInferenceResponse
-	5, // [5:6] is the sub-list for method output_type
-	4, // [4:5] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	6, // 4: snake.TrainingData.examples:type_name -> snake.TrainingExample
+	3, // 5: snake.InferenceService.Predict:input_type -> snake.InferenceRequest
+	5, // 6: snake.InferenceService.Predict:output_type -> snake.BatchInferenceResponse
+	6, // [6:7] is the sub-list for method output_type
+	5, // [5:6] is the sub-list for method input_type
+	5, // [5:5] is the sub-list for extension type_name
+	5, // [5:5] is the sub-list for extension extendee
+	0, // [0:5] is the sub-list for field type_name
 }
 
 func init() { file_snake_proto_init() }
@@ -510,7 +561,7 @@ func file_snake_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_snake_proto_rawDesc), len(file_snake_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   7,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

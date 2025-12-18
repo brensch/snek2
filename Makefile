@@ -46,6 +46,9 @@ run-py: $(VENV_DIR)
 run-go:
 	go run ./go-worker
 
+train: $(VENV_DIR)
+	$(PYTHON) py-inference/train.py
+
 run:
 	@echo "Starting Python Inference Server..."
 	@trap 'kill 0' EXIT; \

@@ -19,7 +19,7 @@ class ResBlock(nn.Module):
         return x
 
 class SnakeNet(nn.Module):
-    def __init__(self, in_channels=3, width=11, height=11):
+    def __init__(self, in_channels=17, width=11, height=11):
         super(SnakeNet, self).__init__()
         self.width = width
         self.height = height
@@ -36,13 +36,13 @@ class SnakeNet(nn.Module):
         # Policy Head
         self.policy_conv = nn.Conv2d(256, 2, kernel_size=1)
         self.policy_bn = nn.BatchNorm2d(2)
-        self.policy_fc = nn.Linear(2 * width * height, 4)
+        self.policy_fc = nn.Linear(2 * width * height, 16) # 4 snakes * 4 moves
         
         # Value Head
         self.value_conv = nn.Conv2d(256, 1, kernel_size=1)
         self.value_bn = nn.BatchNorm2d(1)
         self.value_fc1 = nn.Linear(1 * width * height, 256)
-        self.value_fc2 = nn.Linear(256, 1)
+        self.value_fc2 = nn.Linear(256, 4) # 4 snakes
 
     def forward(self, x):
         # Backbone
@@ -53,7 +53,11 @@ class SnakeNet(nn.Module):
         p = F.relu(self.policy_bn(self.policy_conv(x)))
         p = p.view(p.size(0), -1)
         p = self.policy_fc(p)
-        p = F.softmax(p, dim=1) # Output probabilities
+        
+        # Reshape to (Batch, 4, 4) to apply softmax per snake
+        p = p.view(-1, 4, 4)
+        p = F.softmax(p, dim=2)
+        p = p.view(-1, 16) # Flatten back
         
         # Value Head
         v = F.relu(self.value_bn(self.value_conv(x)))
