@@ -35,16 +35,16 @@ class SnakeDataset(Dataset):
 
     def __getitem__(self, idx):
         ex = self.examples[idx]
-        
+
         # State
         state = np.frombuffer(ex.state_data, dtype=np.float32).reshape(17, 11, 11).copy()
-        
+
         # Policy Target
         policy = np.array(ex.policies, dtype=np.float32)
-        
+
         # Value Target
         value = np.array(ex.values, dtype=np.float32)
-        
+
         return torch.from_numpy(state), torch.from_numpy(policy), torch.from_numpy(value)
 
 def train():
@@ -60,7 +60,7 @@ def train():
     print(f"Found {len(files)} data files.")
     dataset = SnakeDataset(files)
     print(f"Loaded {len(dataset)} examples.")
-    
+
     if len(dataset) == 0:
         return
 
@@ -71,14 +71,14 @@ def train():
     if os.path.exists(MODEL_PATH):
         print(f"Loading existing model from {MODEL_PATH}")
         model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
-    
+
     optimizer = optim.Adam(model.parameters(), lr=LR)
-    
+
     # Loss Functions
     # Policy: Cross Entropy (or KL Divergence)
     # Value: MSE
     mse_loss = nn.MSELoss()
-    
+
     model.train()
     for epoch in range(EPOCHS):
         total_loss = 0
@@ -86,32 +86,32 @@ def train():
             states = states.to(device)
             policies = policies.to(device)
             values = values.to(device)
-            
+
             optimizer.zero_grad()
-            
+
             pred_policies, pred_values = model(states)
-            
+
             # Policy Loss: -sum(target * log(pred))
             # Add epsilon to avoid log(0)
             loss_policy = -torch.sum(policies * torch.log(pred_policies + 1e-8)) / states.size(0)
-            
+
             # Value Loss
             loss_value = mse_loss(pred_values, values)
-            
+
             loss = loss_policy + loss_value
             loss.backward()
             optimizer.step()
-            
+
             total_loss += loss.item()
-            
+
         print(f"Epoch {epoch+1}/{EPOCHS}, Loss: {total_loss / len(dataloader):.4f}")
 
     # Save Model
     torch.save(model.state_dict(), MODEL_PATH)
     print(f"Model saved to {MODEL_PATH}")
-    
+
     # Cleanup Data?
     # For now, keep it. In a real loop, we might archive it.
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     train()
