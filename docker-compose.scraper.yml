@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  scraper:
+    build:
+      context: .
+      dockerfile: scraper/Dockerfile
+    container_name: battlesnake-scraper
+    restart: unless-stopped
+    environment:
+      - DB_PATH=/data/battlesnake.db
+      - OUTPUT_DIR=/output
+      - WORKERS=4
+      - MAX_PLAYERS=100
+      - DELAY=500ms
+      - INTERVAL=30m
+      - AUTO_EXPORT=true
+    volumes:
+      # Database persistence
+      - ./scraper-data:/data
+      # Training data output (mount your data folder here)
+      - ./data:/output
+    # Override default command if needed
+    # command: ["-daemon", "-auto-export", "-max-players=50"]

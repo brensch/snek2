@@ -61,7 +61,7 @@ scrape:
 	go run ./scraper -db=battlesnake.db -workers=4 -max-players=50
 
 scrape-daemon:
-	go run ./scraper -db=battlesnake.db -daemon -interval=30m
+	go run ./scraper -db=battlesnake.db -daemon -interval=30m -auto-export -output-dir=data
 
 scrape-stats:
 	go run ./scraper -db=battlesnake.db -stats
@@ -71,3 +71,30 @@ scrape-export:
 
 build-scraper:
 	go build -o bin/scraper ./scraper
+
+# Docker scraper targets
+docker-scraper-build:
+	docker build -t battlesnake-scraper -f scraper/Dockerfile .
+
+docker-scraper-run:
+	docker run -d --name battlesnake-scraper \
+		-v $(PWD)/scraper-data:/data \
+		-v $(PWD)/data:/output \
+		-e WORKERS=4 \
+		-e MAX_PLAYERS=100 \
+		-e INTERVAL=30m \
+		-e AUTO_EXPORT=true \
+		battlesnake-scraper
+
+docker-scraper-logs:
+	docker logs -f battlesnake-scraper
+
+docker-scraper-stop:
+	docker stop battlesnake-scraper && docker rm battlesnake-scraper
+
+# Or use docker-compose
+docker-scraper-up:
+	docker-compose -f docker-compose.scraper.yml up -d --build
+
+docker-scraper-down:
+	docker-compose -f docker-compose.scraper.yml down

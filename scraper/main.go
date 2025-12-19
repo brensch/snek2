@@ -20,16 +20,18 @@ import (
 
 func main() {
 	// Command line flags
-	dbPath := flag.String("db", "battlesnake.db", "Path to SQLite database")
-	numWorkers := flag.Int("workers", 4, "Number of download workers")
-	maxPlayers := flag.Int("max-players", 50, "Maximum number of players to check from leaderboard")
-	requestDelay := flag.Duration("delay", 500*time.Millisecond, "Delay between HTTP requests")
+	dbPath := flag.String("db", getEnvOrDefault("DB_PATH", "battlesnake.db"), "Path to SQLite database")
+	numWorkers := flag.Int("workers", getEnvIntOrDefault("WORKERS", 4), "Number of download workers")
+	maxPlayers := flag.Int("max-players", getEnvIntOrDefault("MAX_PLAYERS", 50), "Maximum number of players to check from leaderboard")
+	requestDelay := flag.Duration("delay", getEnvDurationOrDefault("DELAY", 500*time.Millisecond), "Delay between HTTP requests")
 	daemon := flag.Bool("daemon", false, "Run as daemon (continuously check for new games)")
-	daemonInterval := flag.Duration("interval", 30*time.Minute, "Interval between discovery runs in daemon mode")
+	daemonInterval := flag.Duration("interval", getEnvDurationOrDefault("INTERVAL", 30*time.Minute), "Interval between discovery runs in daemon mode")
 	exportMode := flag.Bool("export", false, "Export unprocessed games to training data")
 	exportPath := flag.String("export-path", "data/scraped_training.pb", "Output path for exported training data")
 	exportMax := flag.Int("export-max", 100, "Maximum games to export")
 	statsOnly := flag.Bool("stats", false, "Only show database statistics")
+	autoExport := flag.Bool("auto-export", getEnvBoolOrDefault("AUTO_EXPORT", false), "Auto-export after each scrape run (daemon mode)")
+	outputDir := flag.String("output-dir", getEnvOrDefault("OUTPUT_DIR", "output"), "Output directory for auto-exported .pb files")
 
 	flag.Parse()
 
@@ -61,6 +63,8 @@ func main() {
 	log.Printf("  Max Players: %d", *maxPlayers)
 	log.Printf("  Request Delay: %s", *requestDelay)
 	log.Printf("  Daemon Mode: %v", *daemon)
+	log.Printf("  Auto Export: %v", *autoExport)
+	log.Printf("  Output Dir: %s", *outputDir)
 
 	// Setup signal handling for graceful shutdown
 	sigChan := make(chan os.Signal, 1)
@@ -68,9 +72,12 @@ func main() {
 
 	// Run scraper
 	if *daemon {
-		runDaemon(database, *numWorkers, *maxPlayers, *requestDelay, *daemonInterval, sigChan)
+		runDaemon(database, *numWorkers, *maxPlayers, *requestDelay, *daemonInterval, *autoExport, *outputDir, sigChan)
 	} else {
 		runOnce(database, *numWorkers, *maxPlayers, *requestDelay)
+		if *autoExport {
+			autoExportGames(database, *outputDir)
+		}
 	}
 
 	printStats(database)
@@ -101,9 +108,12 @@ func runOnce(database *db.DB, numWorkers, maxPlayers int, requestDelay time.Dura
 
 	// Start discovery
 	discConfig := discovery.Config{
-		LeaderboardURL: "https://play.battlesnake.com/leaderboard/standard",
-		RequestDelay:   requestDelay,
-		MaxPlayers:     maxPlayers,
+		LeaderboardURLs: []string{
+			"https://play.battlesnake.com/leaderboard/standard",
+			"https://play.battlesnake.com/leaderboard/standard-duels",
+		},
+		RequestDelay: requestDelay,
+		MaxPlayers:   maxPlayers,
 	}
 	discWorker := discovery.NewWorker(discConfig, existingIDs)
 
@@ -126,18 +136,24 @@ func runOnce(database *db.DB, numWorkers, maxPlayers int, requestDelay time.Dura
 	log.Printf("  Total frames: %d", stats.FramesTotal)
 }
 
-func runDaemon(database *db.DB, numWorkers, maxPlayers int, requestDelay, interval time.Duration, sigChan chan os.Signal) {
+func runDaemon(database *db.DB, numWorkers, maxPlayers int, requestDelay, interval time.Duration, autoExport bool, outputDir string, sigChan chan os.Signal) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	// Run immediately first
 	runOnce(database, numWorkers, maxPlayers, requestDelay)
+	if autoExport {
+		autoExportGames(database, outputDir)
+	}
 
 	for {
 		select {
 		case <-ticker.C:
 			log.Printf("Starting scheduled discovery run...")
 			runOnce(database, numWorkers, maxPlayers, requestDelay)
+			if autoExport {
+				autoExportGames(database, outputDir)
+			}
 		case sig := <-sigChan:
 			log.Printf("Received signal %v, shutting down...", sig)
 			return
@@ -256,4 +272,104 @@ func exportBatch(database *db.DB, batchSize int, outputDir string) error {
 
 	log.Printf("Exported %d examples from %d games to %s", totalExamples, len(games), outputDir)
 	return nil
+}
+
+// autoExportGames exports all unprocessed games to individual .pb files
+func autoExportGames(database *db.DB, outputDir string) {
+	// Ensure output directory exists
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		log.Printf("Failed to create output directory: %v", err)
+		return
+	}
+
+	// Get all unprocessed games
+	games, err := database.GetUnprocessedGames(10000)
+	if err != nil {
+		log.Printf("Failed to get unprocessed games: %v", err)
+		return
+	}
+
+	if len(games) == 0 {
+		log.Printf("No unprocessed games to export")
+		return
+	}
+
+	log.Printf("Auto-exporting %d games to %s", len(games), outputDir)
+
+	exp := exporter.NewExporter(database)
+	totalExamples := 0
+	exportedGames := 0
+
+	for _, game := range games {
+		examples, err := exp.ConvertGame(game.ID)
+		if err != nil {
+			log.Printf("Failed to convert game %s: %v", game.ID, err)
+			continue
+		}
+
+		if len(examples) == 0 {
+			continue
+		}
+
+		// Create training data proto
+		td := &pb.TrainingData{Examples: examples}
+		data, err := proto.Marshal(td)
+		if err != nil {
+			log.Printf("Failed to marshal game %s: %v", game.ID, err)
+			continue
+		}
+
+		// Write to file with timestamp for uniqueness
+		filename := fmt.Sprintf("game_%d_%s.pb", time.Now().UnixNano(), game.ID[:8])
+		outputPath := filepath.Join(outputDir, filename)
+
+		if err := os.WriteFile(outputPath, data, 0644); err != nil {
+			log.Printf("Failed to write %s: %v", outputPath, err)
+			continue
+		}
+
+		totalExamples += len(examples)
+		exportedGames++
+
+		// Mark as processed
+		if err := database.MarkGameProcessed(game.ID); err != nil {
+			log.Printf("Failed to mark game %s as processed: %v", game.ID, err)
+		}
+	}
+
+	log.Printf("Auto-export complete: %d games, %d examples", exportedGames, totalExamples)
+}
+
+// Environment variable helpers
+func getEnvOrDefault(key, defaultVal string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultVal
+}
+
+func getEnvIntOrDefault(key string, defaultVal int) int {
+	if val := os.Getenv(key); val != "" {
+		var i int
+		if _, err := fmt.Sscanf(val, "%d", &i); err == nil {
+			return i
+		}
+	}
+	return defaultVal
+}
+
+func getEnvDurationOrDefault(key string, defaultVal time.Duration) time.Duration {
+	if val := os.Getenv(key); val != "" {
+		if d, err := time.ParseDuration(val); err == nil {
+			return d
+		}
+	}
+	return defaultVal
+}
+
+func getEnvBoolOrDefault(key string, defaultVal bool) bool {
+	if val := os.Getenv(key); val != "" {
+		return val == "true" || val == "1" || val == "yes"
+	}
+	return defaultVal
 }

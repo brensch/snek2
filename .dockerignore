@@ -1,0 +1,52 @@
+# Virtual environment
+.venv/
+venv/
+env/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Data files (large!)
+data/
+*.pb
+*.pt
+*.onnx
+scraper-data/
+battlesnake.db
+
+# Models
+models/
+
+# Build artifacts
+bin/
+*.so
+*.so.*
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Infrastructure / deployment
+infrastructure/
+
+# Temporary files
+*.log
+*.tmp
+.env
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Test files
+*_test.go
