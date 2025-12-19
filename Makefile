@@ -55,3 +55,19 @@ run:
 	tmux new-session -d -s snek '$(MAKE) run-py'
 	tmux split-window -h -t snek '$(MAKE) run-go'
 	tmux attach -t snek
+
+# Scraper targets
+scrape:
+	go run ./scraper -db=battlesnake.db -workers=4 -max-players=50
+
+scrape-daemon:
+	go run ./scraper -db=battlesnake.db -daemon -interval=30m
+
+scrape-stats:
+	go run ./scraper -db=battlesnake.db -stats
+
+scrape-export:
+	go run ./scraper -db=battlesnake.db -export -export-path=data/scraped_training.pb -export-max=100
+
+build-scraper:
+	go build -o bin/scraper ./scraper

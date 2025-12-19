@@ -14,9 +14,9 @@ from model import SnakeNet
 
 DATA_DIR = "data"
 MODEL_PATH = "models/latest.pt"
-BATCH_SIZE = 64
-EPOCHS = 1
-LR = 0.001
+BATCH_SIZE = 256      # Larger batch = faster training (if GPU memory allows)
+EPOCHS = 10           # More passes over the data
+LR = 0.01             # 10x higher learning rate for faster convergence
 
 class SnakeDataset(Dataset):
     def __init__(self, file_paths):
@@ -64,7 +64,14 @@ def train():
     if len(dataset) == 0:
         return
 
-    dataloader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=True)
+    dataloader = DataLoader(
+        dataset, 
+        batch_size=BATCH_SIZE, 
+        shuffle=True,
+        num_workers=4,        # Parallel data loading
+        pin_memory=True,      # Faster GPU transfer
+        persistent_workers=True
+    )
 
     # Load Model
     model = SnakeNet(in_channels=17, width=11, height=11).to(device)
