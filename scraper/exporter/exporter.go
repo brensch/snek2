@@ -8,7 +8,7 @@ import (
 	"sort"
 
 	pb "github.com/brensch/snek2/gen/go"
-	"github.com/brensch/snek2/go-worker/convert"
+	"github.com/brensch/snek2/executor/convert"
 	"github.com/brensch/snek2/scraper/db"
 	"github.com/brensch/snek2/scraper/downloader"
 	"google.golang.org/protobuf/proto"

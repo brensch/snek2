@@ -41,14 +41,14 @@ proto-py: $(VENV_DIR)
 	$(PYTHON) -m grpc_tools.protoc -Iproto --python_out=gen/python --grpc_python_out=gen/python --pyi_out=gen/python snake.proto
 
 run-py: $(VENV_DIR)
-	$(PYTHON) py-inference/server.py
+	$(PYTHON) trainer/server.py
 
 run-go:
 	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
-	go run ./go-worker
+	go run ./executor
 
 train: $(VENV_DIR)
-	$(PYTHON) py-inference/train.py
+	$(PYTHON) trainer/train.py
 
 run:
 	@echo "Starting Snek2 in tmux..."
