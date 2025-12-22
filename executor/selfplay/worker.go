@@ -72,7 +72,7 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbo
 					Config: mctsConfig,
 					Client: client,
 				}
-				root, depth, err := mctsInstance.Search(localState, 800)
+				root, _, err := mctsInstance.Search(localState, 800)
 				if err != nil {
 					log.Printf("MCTS Error: %v", err)
 					return
@@ -123,15 +123,28 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbo
 				policiesMu.Unlock()
 
 				if verbose {
-					moveName := "Unknown"
-					if move >= 0 && move < len(moveNames) {
-						moveName = moveNames[move]
-					}
-					log.Printf("[Worker %d] Turn %d: %s chose %s (Visits: %d, Depth: %d)", workerId, localState.Turn, s.Id, moveName, totalVisits, depth)
+					// Per-snake verbose logging is handled after all moves are chosen.
 				}
 			}(snake)
 		}
 		wg.Wait()
+
+		if verbose {
+			PrintBoard(state)
+			ids := make([]string, 0, len(moves))
+			for id := range moves {
+				ids = append(ids, id)
+			}
+			sort.Strings(ids)
+			for _, id := range ids {
+				m := moves[id]
+				moveName := "Unknown"
+				if m >= 0 && m < len(moveNames) {
+					moveName = moveNames[m]
+				}
+				log.Printf("[Worker %d] Turn %d: %s -> %s", workerId, state.Turn, id, moveName)
+			}
+		}
 
 		// Record Step (Global)
 		sortedSnakes := make([]*pb.Snake, len(state.Snakes))

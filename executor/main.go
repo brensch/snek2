@@ -157,13 +157,14 @@ func main() {
 	for i := 0; i < workers; i++ {
 		go func(workerId int) {
 			log.Printf("Worker %d started", workerId)
+			trace := workerId == 0
 			for {
 				// Run one game
 				// Disable verbose for TUI
 				onStep := func() {
 					totalMoves.Add(1)
 				}
-				examples, result := selfplay.PlayGame(workerId, mcts.Config{Cpuct: 1.0}, c, false, onStep)
+				examples, result := selfplay.PlayGame(workerId, mcts.Config{Cpuct: 1.0}, c, trace, onStep)
 
 				if examples != nil {
 					if err := saveGame(examples, workerId); err != nil {

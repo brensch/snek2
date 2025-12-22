@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/brensch/snek2/executor/convert"
@@ -40,6 +41,7 @@ type OnnxClient struct {
 
 func NewOnnxClient(modelPath string) (*OnnxClient, error) {
 	if runtime.GOOS == "linux" {
+		ensureLinuxLibraryPath()
 		if p := os.Getenv("ORT_SHARED_LIBRARY_PATH"); p != "" {
 			ort.SetSharedLibraryPath(p)
 		} else {
@@ -105,6 +107,54 @@ func NewOnnxClient(modelPath string) (*OnnxClient, error) {
 	go client.batchLoop()
 
 	return client, nil
+}
+
+func ensureLinuxLibraryPath() {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return
+	}
+
+	// These are the common locations of CUDA + Torch shared libraries when installed
+	// via pip packages inside the project's .venv.
+	candidateDirs := []string{
+		cwd,
+		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cublas", "lib"),
+		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cudnn", "lib"),
+		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cuda_runtime", "lib"),
+		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cusolver", "lib"),
+		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cusparse", "lib"),
+		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "triton", "backends", "nvidia", "lib"),
+		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "torch", "lib"),
+	}
+
+	existing := os.Getenv("LD_LIBRARY_PATH")
+	existingSet := map[string]bool{}
+	for _, p := range strings.Split(existing, ":") {
+		if p == "" {
+			continue
+		}
+		existingSet[p] = true
+	}
+
+	toAdd := make([]string, 0, len(candidateDirs))
+	for _, d := range candidateDirs {
+		if existingSet[d] {
+			continue
+		}
+		if st, err := os.Stat(d); err == nil && st.IsDir() {
+			toAdd = append(toAdd, d)
+		}
+	}
+	if len(toAdd) == 0 {
+		return
+	}
+
+	newVal := strings.Join(toAdd, ":")
+	if existing != "" {
+		newVal = newVal + ":" + existing
+	}
+	_ = os.Setenv("LD_LIBRARY_PATH", newVal)
 }
 
 func (c *OnnxClient) Close() error {

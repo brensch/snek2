@@ -2,6 +2,7 @@ package selfplay
 
 import (
 	"fmt"
+	"log"
 	"strings"
 
 	pb "github.com/brensch/snek2/gen/go"
@@ -47,14 +48,14 @@ func PrintBoard(state *pb.GameState) {
 
 	// Print
 	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("--- Turn %d ---\n", state.Turn))
+	sb.WriteString(fmt.Sprintf("\n=== TRACE Turn %d (you_id=%s) ===\n", state.Turn, state.YouId))
 	for y := state.Height - 1; y >= 0; y-- {
 		for x := 0; x < int(state.Width); x++ {
 			sb.WriteString(grid[y][x] + " ")
 		}
 		sb.WriteString("\n")
 	}
-	fmt.Println(sb.String())
+	log.Print(sb.String())
 }
 
 func isBounds(state *pb.GameState, x, y int) bool {
