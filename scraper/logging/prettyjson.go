@@ -76,7 +76,7 @@ func (h *PrettyJSONHandler) Handle(_ context.Context, r slog.Record) error {
 		addAttr(payload, h.groups, a)
 	}
 
-	b, err := json.MarshalIndent(payload, "", "  ")
+	b, err := json.Marshal(payload)
 	if err != nil {
 		// As a last resort, avoid dropping logs.
 		b = []byte("{\"time\":" + strconv.Quote(payload["time"].(string)) + ",\"level\":" + strconv.Quote(payload["level"].(string)) + ",\"msg\":" + strconv.Quote(r.Message) + "}")
