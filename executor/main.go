@@ -1,18 +1,22 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
+	"os/signal"
+	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/brensch/snek2/executor/inference"
 	"github.com/brensch/snek2/executor/mcts"
 	"github.com/brensch/snek2/executor/selfplay"
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
+	"github.com/brensch/snek2/scraper/store"
 	tea "github.com/charmbracelet/bubbletea"
-	"google.golang.org/protobuf/proto"
 )
 
 var totalMoves atomic.Int64
@@ -22,7 +26,7 @@ type instrumentedClient struct {
 	mcts.Predictor
 }
 
-func (c *instrumentedClient) Predict(state *pb.GameState) ([]float32, []float32, error) {
+func (c *instrumentedClient) Predict(state *game.GameState) ([]float32, []float32, error) {
 	totalInferences.Add(1)
 	return c.Predictor.Predict(state)
 }
@@ -31,6 +35,10 @@ type GameUpdate struct {
 	WorkerID int
 	Result   selfplay.GameResult
 	Examples int
+}
+
+type gameWriteRequest struct {
+	rows []store.TrainingRow
 }
 
 type model struct {
@@ -121,6 +129,9 @@ func (m model) View() string {
 }
 
 func main() {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	// Redirect logs to file to avoid messing up TUI
 	// f, err := os.OpenFile("worker.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
 	// if err != nil {
@@ -153,28 +164,43 @@ func main() {
 	log.Printf("Starting Self-Play with %d workers", workers)
 
 	updates := make(chan GameUpdate, workers)
+	writeReqs := make(chan gameWriteRequest, workers*4)
+
+	writerDone := make(chan struct{})
+	go func() {
+		parquetWriterLoop("data", 50, writeReqs)
+		close(writerDone)
+	}()
+
+	var workerWG sync.WaitGroup
 
 	for i := 0; i < workers; i++ {
+		workerWG.Add(1)
 		go func(workerId int) {
+			defer workerWG.Done()
 			log.Printf("Worker %d started", workerId)
 			trace := workerId == 0
 			for {
+				select {
+				case <-ctx.Done():
+					return
+				default:
+				}
+
 				// Run one game
 				// Disable verbose for TUI
 				onStep := func() {
 					totalMoves.Add(1)
 				}
-				examples, result := selfplay.PlayGame(workerId, mcts.Config{Cpuct: 1.0}, c, trace, onStep)
+				examples, result := selfplay.PlayGame(ctx, workerId, mcts.Config{Cpuct: 1.0}, c, trace, onStep)
 
-				if examples != nil {
-					if err := saveGame(examples, workerId); err != nil {
-						log.Printf("Worker %d: Failed to save game: %v", workerId, err)
-					}
+				if len(examples) > 0 {
+					writeReqs <- gameWriteRequest{rows: examples}
 
-					updates <- GameUpdate{
-						WorkerID: workerId,
-						Result:   result,
-						Examples: len(examples),
+					// Avoid blocking shutdown if the UI loop stops consuming.
+					select {
+					case updates <- GameUpdate{WorkerID: workerId, Result: result, Examples: len(examples)}:
+					default:
 					}
 
 				} else {
@@ -196,6 +222,13 @@ func main() {
 
 	for {
 		select {
+		case <-ctx.Done():
+			log.Printf("Shutdown requested; waiting for workers to finish current games...")
+			workerWG.Wait()
+			close(writeReqs)
+			<-writerDone
+			log.Printf("Shutdown complete: final parquet flush done")
+			return
 		case update := <-updates:
 			log.Printf("Worker %d: Winner %s, Steps %d, Ex %d", update.WorkerID, update.Result.WinnerId, update.Result.Steps, update.Examples)
 		case <-ticker.C:
@@ -207,16 +240,42 @@ func main() {
 	}
 }
 
-func saveGame(examples []*pb.TrainingExample, workerId int) error {
-	data := &pb.TrainingData{
-		Examples: examples,
+func parquetWriterLoop(outDir string, gamesPerFlush int, in <-chan gameWriteRequest) {
+	if gamesPerFlush <= 0 {
+		gamesPerFlush = 50
 	}
 
-	bytes, err := proto.Marshal(data)
-	if err != nil {
-		return err
+	pendingRows := make([]store.TrainingRow, 0, 1024*gamesPerFlush)
+	pendingGames := 0
+
+	for req := range in {
+		if len(req.rows) == 0 {
+			continue
+		}
+		pendingRows = append(pendingRows, req.rows...)
+		pendingGames++
+
+		if pendingGames < gamesPerFlush {
+			continue
+		}
+
+		outPath, err := store.WriteBatchParquetAtomic(outDir, pendingRows)
+		if err != nil {
+			log.Printf("Parquet flush failed (games=%d rows=%d): %v", pendingGames, len(pendingRows), err)
+		} else {
+			log.Printf("Parquet flush ok: %s (games=%d rows=%d)", outPath, pendingGames, len(pendingRows))
+		}
+
+		pendingRows = pendingRows[:0]
+		pendingGames = 0
 	}
 
-	filename := fmt.Sprintf("data/game_%d_%d.pb", time.Now().UnixNano(), workerId)
-	return os.WriteFile(filename, bytes, 0644)
+	if pendingGames > 0 && len(pendingRows) > 0 {
+		outPath, err := store.WriteBatchParquetAtomic(outDir, pendingRows)
+		if err != nil {
+			log.Printf("Parquet final flush failed (games=%d rows=%d): %v", pendingGames, len(pendingRows), err)
+			return
+		}
+		log.Printf("Parquet final flush ok: %s (games=%d rows=%d)", outPath, pendingGames, len(pendingRows))
+	}
 }

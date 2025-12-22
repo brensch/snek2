@@ -1,8 +1,7 @@
 package rules
 
 import (
-	pb "github.com/brensch/snek2/gen/go"
-	"google.golang.org/protobuf/proto"
+	"github.com/brensch/snek2/game"
 )
 
 const (
@@ -13,11 +12,11 @@ const (
 )
 
 // GetLegalMoves returns a list of legal moves for the snake identified by YouId
-func GetLegalMoves(state *pb.GameState) []int {
-	var you *pb.Snake
-	for _, s := range state.Snakes {
-		if s.Id == state.YouId {
-			you = s
+func GetLegalMoves(state *game.GameState) []int {
+	var you *game.Snake
+	for i := range state.Snakes {
+		if state.Snakes[i].Id == state.YouId {
+			you = &state.Snakes[i]
 			break
 		}
 	}
@@ -32,12 +31,12 @@ func GetLegalMoves(state *pb.GameState) []int {
 	// Potential next positions
 	candidates := []struct {
 		move int
-		p    *pb.Point
+		p    game.Point
 	}{
-		{MoveUp, &pb.Point{X: head.X, Y: head.Y + 1}},
-		{MoveDown, &pb.Point{X: head.X, Y: head.Y - 1}},
-		{MoveLeft, &pb.Point{X: head.X - 1, Y: head.Y}},
-		{MoveRight, &pb.Point{X: head.X + 1, Y: head.Y}},
+		{MoveUp, game.Point{X: head.X, Y: head.Y + 1}},
+		{MoveDown, game.Point{X: head.X, Y: head.Y - 1}},
+		{MoveLeft, game.Point{X: head.X - 1, Y: head.Y}},
+		{MoveRight, game.Point{X: head.X + 1, Y: head.Y}},
 	}
 
 	for _, c := range candidates {
@@ -49,7 +48,7 @@ func GetLegalMoves(state *pb.GameState) []int {
 	return moves
 }
 
-func isSafe(state *pb.GameState, p *pb.Point, myBody []*pb.Point) bool {
+func isSafe(state *game.GameState, p game.Point, myBody []game.Point) bool {
 	// 1. Check Bounds
 	if p.X < 0 || p.X >= state.Width || p.Y < 0 || p.Y >= state.Height {
 		return false
@@ -81,15 +80,14 @@ func isSafe(state *pb.GameState, p *pb.Point, myBody []*pb.Point) bool {
 // NextState returns the next state after applying a move for YouId
 // Note: This currently only moves "You". Enemies are static.
 // This is used primarily for MCTS expansion where we might not know enemy moves.
-func NextState(state *pb.GameState, move int) *pb.GameState {
-	// Deep copy state
-	newState := proto.Clone(state).(*pb.GameState)
+func NextState(state *game.GameState, move int) *game.GameState {
+	newState := state.Clone()
 	newState.Turn++
 
-	var you *pb.Snake
-	for _, s := range newState.Snakes {
-		if s.Id == newState.YouId {
-			you = s
+	var you *game.Snake
+	for i := range newState.Snakes {
+		if newState.Snakes[i].Id == newState.YouId {
+			you = &newState.Snakes[i]
 			break
 		}
 	}
@@ -100,7 +98,7 @@ func NextState(state *pb.GameState, move int) *pb.GameState {
 
 	// Calculate new head
 	head := you.Body[0]
-	newHead := &pb.Point{X: head.X, Y: head.Y}
+	newHead := game.Point{X: head.X, Y: head.Y}
 
 	switch move {
 	case MoveUp:
@@ -125,7 +123,7 @@ func NextState(state *pb.GameState, move int) *pb.GameState {
 	}
 
 	// Update Body
-	newBody := []*pb.Point{newHead}
+	newBody := []game.Point{newHead}
 	newBody = append(newBody, you.Body...)
 
 	if ateFood {
@@ -143,13 +141,14 @@ func NextState(state *pb.GameState, move int) *pb.GameState {
 }
 
 // NextStateSimultaneous advances the game state with moves for all snakes.
-func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameState {
-	newState := proto.Clone(state).(*pb.GameState)
+func NextStateSimultaneous(state *game.GameState, moves map[string]int) *game.GameState {
+	newState := state.Clone()
 	newState.Turn++
 
 	// 1. Calculate potential new heads
-	newHeads := make(map[string]*pb.Point)
-	for _, s := range newState.Snakes {
+	newHeads := make(map[string]game.Point)
+	for i := range newState.Snakes {
+		s := &newState.Snakes[i]
 		if s.Health <= 0 {
 			continue
 		}
@@ -162,7 +161,7 @@ func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameSt
 		}
 
 		head := s.Body[0]
-		newHead := &pb.Point{X: head.X, Y: head.Y}
+		newHead := game.Point{X: head.X, Y: head.Y}
 		switch move {
 		case MoveUp:
 			newHead.Y++
@@ -191,7 +190,7 @@ func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameSt
 	}
 
 	// Remove eaten food
-	remainingFood := []*pb.Point{}
+	remainingFood := []game.Point{}
 	for i, f := range newState.Food {
 		if !eatenFood[i] {
 			remainingFood = append(remainingFood, f)
@@ -200,14 +199,15 @@ func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameSt
 	newState.Food = remainingFood
 
 	// Update bodies
-	for _, s := range newState.Snakes {
+	for i := range newState.Snakes {
+		s := &newState.Snakes[i]
 		newHead, ok := newHeads[s.Id]
 		if !ok {
 			s.Health = 0 // No move = dead
 			continue
 		}
 
-		newBody := []*pb.Point{newHead}
+		newBody := []game.Point{newHead}
 		newBody = append(newBody, s.Body...)
 
 		if snakeAte[s.Id] {
@@ -289,14 +289,13 @@ func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameSt
 	}
 
 	// Apply Death
-	finalSnakes := []*pb.Snake{}
+	finalSnakes := make([]game.Snake, 0, len(newState.Snakes))
 	for _, s := range newState.Snakes {
 		if deadSnakes[s.Id] {
-			s.Health = 0
-			s.Body = []*pb.Point{} // Clear body? Or keep it? Standard is remove.
-		} else {
-			finalSnakes = append(finalSnakes, s)
+			// Drop dead snakes from the active list.
+			continue
 		}
+		finalSnakes = append(finalSnakes, s)
 	}
 	newState.Snakes = finalSnakes
 
@@ -304,7 +303,7 @@ func NextStateSimultaneous(state *pb.GameState, moves map[string]int) *pb.GameSt
 }
 
 // IsGameOver returns true if the game is over (0 or 1 snake left)
-func IsGameOver(state *pb.GameState) bool {
+func IsGameOver(state *game.GameState) bool {
 	living := 0
 	for _, s := range state.Snakes {
 		if s.Health > 0 {
@@ -315,11 +314,11 @@ func IsGameOver(state *pb.GameState) bool {
 }
 
 // IsTerminal returns true if the game is over for You
-func IsTerminal(state *pb.GameState) bool {
-	var you *pb.Snake
-	for _, s := range state.Snakes {
-		if s.Id == state.YouId {
-			you = s
+func IsTerminal(state *game.GameState) bool {
+	var you *game.Snake
+	for i := range state.Snakes {
+		if state.Snakes[i].Id == state.YouId {
+			you = &state.Snakes[i]
 			break
 		}
 	}
@@ -344,7 +343,7 @@ func IsTerminal(state *pb.GameState) bool {
 }
 
 // GetResult returns the result of the game (+1 for win, -1 for loss)
-func GetResult(state *pb.GameState) float32 {
+func GetResult(state *game.GameState) float32 {
 	if IsTerminal(state) {
 		// If we are terminal, we lost (unless we are the last one standing, but let's assume simple survival)
 		return -1.0

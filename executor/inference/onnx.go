@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/brensch/snek2/executor/convert"
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
 	ort "github.com/yalue/onnxruntime_go"
 )
 
@@ -161,7 +161,7 @@ func (c *OnnxClient) Close() error {
 	return c.session.Destroy()
 }
 
-func (c *OnnxClient) Predict(state *pb.GameState) ([]float32, []float32, error) {
+func (c *OnnxClient) Predict(state *game.GameState) ([]float32, []float32, error) {
 	// Convert state to tensor data
 	byteDataPtr := convert.StateToBytes(state)
 	byteData := *byteDataPtr

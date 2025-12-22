@@ -65,3 +65,40 @@ func WriteBatchParquet(outDir string, rows []TrainingRow) (string, error) {
 	}
 	return outPath, nil
 }
+
+// WriteBatchParquetAtomic writes a Parquet file into outDir/tmp and then
+// atomically moves it into outDir.
+//
+// This is useful for long-running writers (like self-play) that want to ensure
+// readers never observe partially-written Parquet files.
+func WriteBatchParquetAtomic(outDir string, rows []TrainingRow) (string, error) {
+	if err := os.MkdirAll(outDir, 0o755); err != nil {
+		return "", fmt.Errorf("create output dir: %w", err)
+	}
+
+	tmpDir := filepath.Join(outDir, "tmp")
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return "", fmt.Errorf("create tmp dir: %w", err)
+	}
+
+	name := fmt.Sprintf("batch_%d.parquet", time.Now().UnixNano())
+	finalPath := filepath.Join(outDir, name)
+	tmpPath := filepath.Join(tmpDir, name+".tmp")
+	_ = os.Remove(tmpPath)
+
+	if err := parquet.WriteFile(tmpPath, rows,
+		parquet.Compression(&zstd.Codec{Level: zstd.SpeedBetterCompression}),
+		parquet.SkipPageBounds("x"),
+		parquet.KeyValueMetadata("schema", "training_row_v1"),
+	); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("write parquet: %w", err)
+	}
+
+	if err := os.Rename(tmpPath, finalPath); err != nil {
+		_ = os.Remove(tmpPath)
+		return "", fmt.Errorf("rename parquet: %w", err)
+	}
+
+	return finalPath, nil
+}

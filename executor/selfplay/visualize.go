@@ -5,10 +5,10 @@ import (
 	"log"
 	"strings"
 
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
 )
 
-func PrintBoard(state *pb.GameState) {
+func PrintBoard(state *game.GameState) {
 	// Create a grid
 	grid := make([][]string, state.Height)
 	for y := range grid {
@@ -58,6 +58,6 @@ func PrintBoard(state *pb.GameState) {
 	log.Print(sb.String())
 }
 
-func isBounds(state *pb.GameState, x, y int) bool {
+func isBounds(state *game.GameState, x, y int) bool {
 	return x >= 0 && x < int(state.Width) && y >= 0 && y < int(state.Height)
 }

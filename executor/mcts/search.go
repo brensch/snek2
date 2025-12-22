@@ -1,9 +1,10 @@
 package mcts
 
 import (
+	"context"
 	"math"
 
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
 	"github.com/brensch/snek2/rules"
 )
 
@@ -39,11 +40,19 @@ const (
 )
 
 // Search runs the MCTS simulations
-func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, int, error) {
+func (m *MCTS) Search(ctx context.Context, rootState *game.GameState, simulations int) (*Node, int, error) {
 	root := NewNode(rootState, 1.0)
 	maxDepth := 0
 
 	for i := 0; i < simulations; i++ {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return root, maxDepth, ctx.Err()
+			default:
+			}
+		}
+
 		node := root
 		path := []*Node{node}
 
@@ -91,6 +100,14 @@ func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, int, err
 		if rules.IsTerminal(node.State) {
 			value = rules.GetResult(node.State)
 		} else {
+			if ctx != nil {
+				select {
+				case <-ctx.Done():
+					return root, maxDepth, ctx.Err()
+				default:
+				}
+			}
+
 			// Inference
 			policyLogits, values, err := m.Client.Predict(node.State)
 			if err != nil {
@@ -106,6 +123,14 @@ func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, int, err
 			// Expand
 			legalMoves := rules.GetLegalMoves(node.State)
 			for _, moveInt := range legalMoves {
+				if ctx != nil {
+					select {
+					case <-ctx.Done():
+						return root, maxDepth, ctx.Err()
+					default:
+					}
+				}
+
 				move := Move(moveInt)
 				prob := priors[int(move)]
 				nextState := rules.NextState(node.State, int(move))

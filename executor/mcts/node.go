@@ -1,7 +1,7 @@
 package mcts
 
 import (
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
 )
 
 // Move represents a direction (0: Up, 1: Down, 2: Left, 3: Right)
@@ -13,12 +13,12 @@ type Node struct {
 	ValueSum   float32
 	PriorProb  float32
 	Children   [4]*Node
-	State      *pb.GameState
+	State      *game.GameState
 	IsExpanded bool
 }
 
 // NewNode creates a new MCTS node
-func NewNode(state *pb.GameState, prior float32) *Node {
+func NewNode(state *game.GameState, prior float32) *Node {
 	return &Node{
 		State:     state,
 		PriorProb: prior,
@@ -32,7 +32,7 @@ type Config struct {
 
 // Predictor defines the interface for inference
 type Predictor interface {
-	Predict(state *pb.GameState) ([]float32, []float32, error)
+	Predict(state *game.GameState) ([]float32, []float32, error)
 }
 
 // MCTS holds the search context

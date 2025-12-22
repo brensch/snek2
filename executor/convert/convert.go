@@ -7,7 +7,7 @@ import (
 
 	"sync"
 
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
 )
 
 const (
@@ -49,7 +49,7 @@ func PutBuffer(b *[]byte) {
 // 8-10 Enemy 2 (head, body, health)
 // 11-13 Enemy 3 (head, body, health)
 // Returns a pointer to the byte slice. Caller must return it to pool using PutBuffer.
-func StateToBytes(state *pb.GameState) *[]byte {
+func StateToBytes(state *game.GameState) *[]byte {
 	// Get buffer from pool
 	dataPtr := GetBuffer()
 	data := *dataPtr
@@ -83,10 +83,11 @@ func StateToBytes(state *pb.GameState) *[]byte {
 	}
 
 	// Find ego snake and alive enemies
-	var ego *pb.Snake
-	var enemies []*pb.Snake
-	for _, s := range state.Snakes {
-		if s == nil || s.Health <= 0 || len(s.Body) == 0 {
+	var ego *game.Snake
+	var enemies []*game.Snake
+	for i := range state.Snakes {
+		s := &state.Snakes[i]
+		if s.Health <= 0 || len(s.Body) == 0 {
 			continue
 		}
 		if s.Id == state.YouId {

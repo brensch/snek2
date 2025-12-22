@@ -1,23 +1,21 @@
 package mcts
 
 import (
+	"context"
 	"testing"
 
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
 )
 
 // MockInferenceClient mocks the Predictor interface
 type MockInferenceClient struct{}
 
-func (m *MockInferenceClient) Predict(state *pb.GameState) ([]float32, []float32, error) {
+func (m *MockInferenceClient) Predict(state *game.GameState) ([]float32, []float32, error) {
 	// Return a dummy response
-	// Policies: 16 floats (4 snakes * 4 moves)
-	// Values: 4 floats (1 value per snake)
-	policies := make([]float32, 16)
-	for i := range policies {
-		policies[i] = 0.25
-	}
-	values := []float32{0.5, 0.5, 0.5, 0.5}
+	// Policy logits: 4 floats (Up/Down/Left/Right)
+	// Values: single scalar
+	policies := []float32{0, 0, 0, 0}
+	values := []float32{0.5}
 
 	return policies, values, nil
 }
@@ -29,27 +27,27 @@ func TestSearch(t *testing.T) {
 	mcts := MCTS{Config: config, Client: client}
 
 	// Create a simple game state
-	state := &pb.GameState{
+	state := &game.GameState{
 		Width:  11,
 		Height: 11,
 		YouId:  "me",
-		Snakes: []*pb.Snake{
+		Snakes: []game.Snake{
 			{
 				Id:     "me",
 				Health: 100,
-				Body: []*pb.Point{
+				Body: []game.Point{
 					{X: 5, Y: 5},
 					{X: 5, Y: 4},
 					{X: 5, Y: 3},
 				},
 			},
 		},
-		Food: []*pb.Point{{X: 8, Y: 8}},
+		Food: []game.Point{{X: 8, Y: 8}},
 	}
 
 	// Run Search
 	simulations := 10
-	root, _, err := mcts.Search(state, simulations)
+	root, _, err := mcts.Search(context.Background(), state, simulations)
 	if err != nil {
 		t.Fatalf("Search failed: %v", err)
 	}
@@ -85,27 +83,27 @@ func BenchmarkSearch(b *testing.B) {
 	mcts := MCTS{Config: config, Client: client}
 
 	// Create a simple game state
-	state := &pb.GameState{
+	state := &game.GameState{
 		Width:  11,
 		Height: 11,
 		YouId:  "me",
-		Snakes: []*pb.Snake{
+		Snakes: []game.Snake{
 			{
 				Id:     "me",
 				Health: 100,
-				Body: []*pb.Point{
+				Body: []game.Point{
 					{X: 5, Y: 5},
 					{X: 5, Y: 4},
 					{X: 5, Y: 3},
 				},
 			},
 		},
-		Food: []*pb.Point{{X: 8, Y: 8}},
+		Food: []game.Point{{X: 8, Y: 8}},
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := mcts.Search(state, 800) // 800 simulations per search
+		_, _, err := mcts.Search(context.Background(), state, 800) // 800 simulations per search
 		if err != nil {
 			b.Fatalf("Search failed: %v", err)
 		}

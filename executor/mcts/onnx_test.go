@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/brensch/snek2/executor/convert"
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
 	ort "github.com/yalue/onnxruntime_go"
 )
 
@@ -56,7 +56,7 @@ func NewOnnxClient(modelPath string) (*OnnxInferenceClient, error) {
 	}, nil
 }
 
-func (c *OnnxInferenceClient) Predict(state *pb.GameState) (*pb.InferenceResponse, error) {
+func (c *OnnxInferenceClient) Predict(state *game.GameState) ([]float32, []float32, error) {
 	// Convert state to tensor data
 	byteDataPtr := convert.StateToBytes(state)
 	byteData := *byteDataPtr
@@ -74,7 +74,7 @@ func (c *OnnxInferenceClient) Predict(state *pb.GameState) (*pb.InferenceRespons
 	inputShape := []int64{1, 14, 11, 11}
 	inputTensor, err := ort.NewTensor(ort.NewShape(inputShape...), floats)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer inputTensor.Destroy()
 
@@ -82,20 +82,20 @@ func (c *OnnxInferenceClient) Predict(state *pb.GameState) (*pb.InferenceRespons
 	policyShape := []int64{1, 4}
 	policyTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(policyShape...))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer policyTensor.Destroy()
 
 	valueShape := []int64{1, 1}
 	valueTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(valueShape...))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer valueTensor.Destroy()
 
 	err = c.session.Run([]ort.Value{inputTensor}, []ort.Value{policyTensor, valueTensor})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Get outputs
@@ -107,10 +107,7 @@ func (c *OnnxInferenceClient) Predict(state *pb.GameState) (*pb.InferenceRespons
 	value := make([]float32, len(valueData))
 	copy(value, valueData)
 
-	return &pb.InferenceResponse{
-		Policies: policy,
-		Values:   value,
-	}, nil
+	return policy, value, nil
 }
 
 func BenchmarkOnnxInference(b *testing.B) {
@@ -135,19 +132,19 @@ func BenchmarkOnnxInference(b *testing.B) {
 	}
 
 	// Create state
-	state := &pb.GameState{
+	state := &game.GameState{
 		Width:  11,
 		Height: 11,
 		YouId:  "me",
-		Snakes: []*pb.Snake{
-			{Id: "me", Health: 100, Body: []*pb.Point{{X: 5, Y: 5}}},
+		Snakes: []game.Snake{
+			{Id: "me", Health: 100, Body: []game.Point{{X: 5, Y: 5}}},
 		},
-		Food: []*pb.Point{{X: 8, Y: 8}},
+		Food: []game.Point{{X: 8, Y: 8}},
 	}
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, err := client.Predict(state)
+		_, _, err := client.Predict(state)
 		if err != nil {
 			b.Fatalf("Prediction failed: %v", err)
 		}

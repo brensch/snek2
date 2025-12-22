@@ -1,6 +1,8 @@
 package selfplay
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"math/rand"
 	"sort"
@@ -9,9 +11,9 @@ import (
 
 	"github.com/brensch/snek2/executor/convert"
 	"github.com/brensch/snek2/executor/mcts"
-	pb "github.com/brensch/snek2/gen/go"
+	"github.com/brensch/snek2/game"
 	"github.com/brensch/snek2/rules"
-	"google.golang.org/protobuf/proto"
+	"github.com/brensch/snek2/scraper/store"
 )
 
 type GameResult struct {
@@ -19,23 +21,24 @@ type GameResult struct {
 	Steps    int
 }
 
-func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, onStep func()) ([]*pb.TrainingExample, GameResult) {
+func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, onStep func()) ([]store.TrainingRow, GameResult) {
 	// rng := rand.New(rand.NewSource(time.Now().UnixNano())) // Unused
 	state := createInitialState()
+	gameID := fmt.Sprintf("selfplay_%d_%d", time.Now().UnixNano(), workerId)
 
-	var examples []*pb.TrainingExample
-
-	type step struct {
-		stateData []byte
-		policies  []float32
-		snakes    []string
-	}
-	var steps []step
-	// var stepsMu sync.Mutex // Not needed if we append in main thread
+	rows := make([]store.TrainingRow, 0, 1024)
 
 	moveNames := []string{"Up", "Down", "Left", "Right"}
 
 	for {
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return nil, GameResult{WinnerId: "", Steps: int(state.Turn)}
+			default:
+			}
+		}
+
 		if verbose {
 			PrintBoard(state)
 		}
@@ -58,22 +61,38 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbo
 				continue
 			}
 
+			snakeID := snake.Id
+
 			wg.Add(1)
-			go func(s *pb.Snake) {
+			go func(id string) {
 				defer wg.Done()
 
-				// Deep copy state for this snake's perspective
-				// Important because we modify YouId
-				localState := proto.Clone(state).(*pb.GameState)
-				localState.YouId = s.Id
+				if ctx != nil {
+					select {
+					case <-ctx.Done():
+						return
+					default:
+					}
+				}
+
+				// Deep copy state for this snake's perspective.
+				localState := state.Clone()
+				localState.YouId = id
 
 				// MCTS Search
 				mctsInstance := &mcts.MCTS{
 					Config: mctsConfig,
 					Client: client,
 				}
-				root, _, err := mctsInstance.Search(localState, 800)
+				root, _, err := mctsInstance.Search(ctx, localState, 800)
 				if err != nil {
+					if ctx != nil {
+						select {
+						case <-ctx.Done():
+							return
+						default:
+						}
+					}
 					log.Printf("MCTS Error: %v", err)
 					return
 				}
@@ -90,7 +109,7 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbo
 				// If no valid moves found (e.g. trapped), pick a default
 				if totalVisits == 0 {
 					movesMu.Lock()
-					moves[s.Id] = 0 // Default Up
+					moves[id] = 0 // Default Up
 					movesMu.Unlock()
 					return
 				}
@@ -115,19 +134,27 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbo
 				}
 
 				movesMu.Lock()
-				moves[s.Id] = move
+				moves[id] = move
 				movesMu.Unlock()
 
 				policiesMu.Lock()
-				policies[s.Id] = policy
+				policies[id] = policy
 				policiesMu.Unlock()
 
 				if verbose {
 					// Per-snake verbose logging is handled after all moves are chosen.
 				}
-			}(snake)
+			}(snakeID)
 		}
 		wg.Wait()
+
+		if ctx != nil {
+			select {
+			case <-ctx.Done():
+				return nil, GameResult{WinnerId: "", Steps: int(state.Turn)}
+			default:
+			}
+		}
 
 		if verbose {
 			PrintBoard(state)
@@ -146,34 +173,40 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbo
 			}
 		}
 
-		// Record Step (Global)
-		sortedSnakes := make([]*pb.Snake, len(state.Snakes))
+		// Record per-snake supervised samples for this turn (ego-centric).
+		sortedSnakes := make([]game.Snake, len(state.Snakes))
 		copy(sortedSnakes, state.Snakes)
 		sort.Slice(sortedSnakes, func(i, j int) bool {
 			return sortedSnakes[i].Id < sortedSnakes[j].Id
 		})
 
-		stepPolicies := make([]float32, 16)
-		stepSnakeIDs := make([]string, 4)
-
-		for i := 0; i < 4 && i < len(sortedSnakes); i++ {
-			s := sortedSnakes[i]
-			stepSnakeIDs[i] = s.Id
-			if p, ok := policies[s.Id]; ok {
-				copy(stepPolicies[i*4:], p)
+		for _, s := range sortedSnakes {
+			if s.Health <= 0 {
+				continue
 			}
+			move, ok := moves[s.Id]
+			if !ok {
+				continue
+			}
+			localState := state.Clone()
+			localState.YouId = s.Id
+
+			xPtr := convert.StateToBytes(localState)
+			x := make([]byte, len(*xPtr))
+			copy(x, *xPtr)
+			convert.PutBuffer(xPtr)
+
+			rows = append(rows, store.TrainingRow{
+				GameID: gameID,
+				Turn:   state.Turn,
+				EgoID:  s.Id,
+				Width:  state.Width,
+				Height: state.Height,
+				X:      x,
+				Policy: int32(move),
+				Value:  0,
+			})
 		}
-
-		stateBytesPtr := convert.StateToBytes(state)
-		stateBytes := make([]byte, len(*stateBytesPtr))
-		copy(stateBytes, *stateBytesPtr)
-		convert.PutBuffer(stateBytesPtr)
-
-		steps = append(steps, step{
-			stateData: stateBytes,
-			policies:  stepPolicies,
-			snakes:    stepSnakeIDs,
-		})
 
 		if onStep != nil {
 			onStep()
@@ -196,42 +229,34 @@ func PlayGame(workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbo
 		winnerId = "" // Draw or everyone died
 	}
 
-	// Assign Values
-	for _, s := range steps {
-		stepValues := make([]float32, 4)
-		for i, id := range s.snakes {
-			if id == "" {
-				continue
-			}
-			if winnerId != "" {
-				if id == winnerId {
-					stepValues[i] = 1.0
-				} else {
-					stepValues[i] = -1.0
-				}
+	// Assign values after outcome is known.
+	if winnerId == "" {
+		for i := range rows {
+			rows[i].Value = 0
+		}
+	} else {
+		for i := range rows {
+			if rows[i].EgoID == winnerId {
+				rows[i].Value = 1
+			} else {
+				rows[i].Value = -1
 			}
 		}
-
-		examples = append(examples, &pb.TrainingExample{
-			StateData: s.stateData,
-			Policies:  s.policies,
-			Values:    stepValues,
-		})
 	}
 
-	return examples, GameResult{WinnerId: winnerId, Steps: int(state.Turn)}
+	return rows, GameResult{WinnerId: winnerId, Steps: int(state.Turn)}
 }
 
-func createInitialState() *pb.GameState {
-	return &pb.GameState{
+func createInitialState() *game.GameState {
+	return &game.GameState{
 		Width:  11,
 		Height: 11,
 		YouId:  "snake1",
-		Snakes: []*pb.Snake{
+		Snakes: []game.Snake{
 			{
 				Id:     "snake1",
 				Health: 100,
-				Body: []*pb.Point{
+				Body: []game.Point{
 					{X: 1, Y: 1},
 					{X: 1, Y: 2},
 					{X: 1, Y: 3},
@@ -240,14 +265,14 @@ func createInitialState() *pb.GameState {
 			{
 				Id:     "snake2",
 				Health: 100,
-				Body: []*pb.Point{
+				Body: []game.Point{
 					{X: 9, Y: 9},
-					{X: 9, Y: 10},
-					{X: 9, Y: 11},
+					{X: 9, Y: 8},
+					{X: 9, Y: 7},
 				},
 			},
 		},
-		Food: []*pb.Point{
+		Food: []game.Point{
 			{X: 5, Y: 5},
 		},
 		Turn: 0,
