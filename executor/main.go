@@ -132,7 +132,7 @@ func main() {
 	// Initialize ONNX Client
 	modelPath := "models/snake_net.onnx"
 	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-		log.Fatalf("Model file not found: %s. Run export_onnx.py first.", modelPath)
+		log.Fatalf("Model file not found: %s. Run trainer/export_onnx.py first.", modelPath)
 	}
 
 	onnxClient, err := inference.NewOnnxClient(modelPath)

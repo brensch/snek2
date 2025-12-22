@@ -50,6 +50,9 @@ run-go:
 train: $(VENV_DIR)
 	$(PYTHON) trainer/train.py
 
+export-onnx: $(VENV_DIR)
+	$(PYTHON) trainer/export_onnx.py
+
 run:
 	@echo "Starting Snek2 in tmux..."
 	tmux new-session -d -s snek '$(MAKE) run-py'
@@ -58,7 +61,7 @@ run:
 
 # Scraper targets
 scrape:
-	go run ./scraper -max-players=50 -out-dir=data -log-path=scraper-data/written_games.log
+	go run ./scraper -out-dir=data -log-path=scraper-data/written_games.log
 
 build-scraper:
 	go build -o bin/scraper ./scraper
@@ -72,7 +75,6 @@ docker-scraper-run:
 		-v $(PWD)/scraper-data:/data \
 		-v $(PWD)/data:/output \
 		-e WORKERS=4 \
-		-e MAX_PLAYERS=100 \
 		-e INTERVAL=30m \
 		-e AUTO_EXPORT=true \
 		battlesnake-scraper

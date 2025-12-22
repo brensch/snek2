@@ -63,15 +63,15 @@ func (c *OnnxInferenceClient) Predict(state *pb.GameState) (*pb.InferenceRespons
 	defer convert.PutBuffer(byteDataPtr)
 
 	// Convert bytes to float32 slice
-	// Input size: 17 * 11 * 11 = 2057 floats
-	floats := make([]float32, 2057)
-	for i := 0; i < 2057; i++ {
+	// Input size: 14 * 11 * 11 = 1694 floats
+	floats := make([]float32, 1694)
+	for i := 0; i < 1694; i++ {
 		bits := uint32(byteData[i*4]) | uint32(byteData[i*4+1])<<8 | uint32(byteData[i*4+2])<<16 | uint32(byteData[i*4+3])<<24
 		floats[i] = math.Float32frombits(bits)
 	}
 
 	// Create input tensor
-	inputShape := []int64{1, 17, 11, 11}
+	inputShape := []int64{1, 14, 11, 11}
 	inputTensor, err := ort.NewTensor(ort.NewShape(inputShape...), floats)
 	if err != nil {
 		return nil, err
@@ -79,14 +79,14 @@ func (c *OnnxInferenceClient) Predict(state *pb.GameState) (*pb.InferenceRespons
 	defer inputTensor.Destroy()
 
 	// Create output tensors
-	policyShape := []int64{1, 16}
+	policyShape := []int64{1, 4}
 	policyTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(policyShape...))
 	if err != nil {
 		return nil, err
 	}
 	defer policyTensor.Destroy()
 
-	valueShape := []int64{1, 4}
+	valueShape := []int64{1, 1}
 	valueTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(valueShape...))
 	if err != nil {
 		return nil, err

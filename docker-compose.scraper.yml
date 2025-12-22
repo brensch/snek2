@@ -10,7 +10,6 @@ services:
     environment:
       - WRITTEN_LOG=/data/written_games.log
       - OUT_DIR=/output
-      - MAX_PLAYERS=100
       - DELAY=500ms
     volumes:
       # Written-log persistence
@@ -18,4 +17,3 @@ services:
       # Training data output (mount your data folder here)
       - ./data:/output
     # Override default command if needed
-    # command: ["-max-players=50"]

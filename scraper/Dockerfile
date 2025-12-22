@@ -32,7 +32,6 @@ RUN mkdir -p /data /output
 # Environment variables with defaults
 ENV WRITTEN_LOG=/data/written_games.log
 ENV OUT_DIR=/output
-ENV MAX_PLAYERS=100
 ENV DELAY=500ms
 
 # Volume mount points

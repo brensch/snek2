@@ -13,7 +13,7 @@ import (
 const (
 	Width         = 11
 	Height        = 11
-	Channels      = 17
+	Channels      = 14
 	BytesPerFloat = 4
 	BufferSize    = Channels * Width * Height * BytesPerFloat
 )
@@ -38,6 +38,16 @@ func PutBuffer(b *[]byte) {
 // StateToBytes flattens the GameState into a byte slice for the inference server.
 // Output shape: [Channels, Height, Width] (C, H, W)
 // Format: Float32 (Little Endian)
+// Encoding is ego-centric and uses state.you_id as the ego snake.
+// Channels match trainer/model.py:
+// 0 Food
+// 1 Hazards (unused by executor state today)
+// 2 My Head
+// 3 My Body (stacked counts)
+// 4 My Health (global plane)
+// 5-7 Enemy 1 (head, body, health)
+// 8-10 Enemy 2 (head, body, health)
+// 11-13 Enemy 3 (head, body, health)
 // Returns a pointer to the byte slice. Caller must return it to pool using PutBuffer.
 func StateToBytes(state *pb.GameState) *[]byte {
 	// Get buffer from pool
@@ -58,51 +68,71 @@ func StateToBytes(state *pb.GameState) *[]byte {
 		binary.LittleEndian.PutUint32(data[idx:], math.Float32bits(val))
 	}
 
+	fillPlane := func(c int, val float32) {
+		bits := math.Float32bits(val)
+		startIdx := c * Height * Width * BytesPerFloat
+		endIdx := startIdx + (Height * Width * BytesPerFloat)
+		for i := startIdx; i < endIdx; i += 4 {
+			binary.LittleEndian.PutUint32(data[i:], bits)
+		}
+	}
+
 	// Channel 0: Food
 	for _, p := range state.Food {
 		set(0, int(p.X), int(p.Y), 1.0)
 	}
 
-	// Sort all snakes by ID to ensure consistent channel assignment
-	snakes := make([]*pb.Snake, len(state.Snakes))
-	copy(snakes, state.Snakes)
-	sort.Slice(snakes, func(i, j int) bool {
-		return snakes[i].Id < snakes[j].Id
-	})
+	// Find ego snake and alive enemies
+	var ego *pb.Snake
+	var enemies []*pb.Snake
+	for _, s := range state.Snakes {
+		if s == nil || s.Health <= 0 || len(s.Body) == 0 {
+			continue
+		}
+		if s.Id == state.YouId {
+			ego = s
+		} else {
+			enemies = append(enemies, s)
+		}
+	}
 
-	// Channels 1-16: Snakes (Max 4)
-	// Each snake gets 4 channels: Head, Body, Tail, Health
-	for i := 0; i < 4 && i < len(snakes); i++ {
-		s := snakes[i]
-		baseCh := 1 + (i * 4)
+	// Stable enemy ordering: by ID, take first 3
+	sort.Slice(enemies, func(i, j int) bool { return enemies[i].Id < enemies[j].Id })
+	if len(enemies) > 3 {
+		enemies = enemies[:3]
+	}
 
+	// Ego channels
+	if ego != nil {
 		// Head
-		if len(s.Body) > 0 {
-			head := s.Body[0]
-			set(baseCh, int(head.X), int(head.Y), 1.0)
+		head := ego.Body[0]
+		set(2, int(head.X), int(head.Y), 1.0)
+
+		// Body counts (including head and tail)
+		counts := make(map[[2]int]int, len(ego.Body))
+		for _, p := range ego.Body {
+			counts[[2]int{int(p.X), int(p.Y)}]++
+		}
+		for k, n := range counts {
+			set(3, k[0], k[1], float32(n))
 		}
 
-		// Body (excluding head and tail)
-		if len(s.Body) > 2 {
-			for _, p := range s.Body[1 : len(s.Body)-1] {
-				set(baseCh+1, int(p.X), int(p.Y), 1.0)
-			}
-		}
+		fillPlane(4, float32(ego.Health)/100.0)
+	}
 
-		// Tail
-		if len(s.Body) > 1 {
-			tail := s.Body[len(s.Body)-1]
-			set(baseCh+2, int(tail.X), int(tail.Y), 1.0)
+	// Enemy channels
+	for i, e := range enemies {
+		base := 5 + i*3
+		head := e.Body[0]
+		set(base, int(head.X), int(head.Y), 1.0)
+		counts := make(map[[2]int]int, len(e.Body))
+		for _, p := range e.Body {
+			counts[[2]int{int(p.X), int(p.Y)}]++
 		}
-
-		// Health (Plane)
-		healthVal := float32(s.Health) / 100.0
-		healthBits := math.Float32bits(healthVal)
-		startIdx := (baseCh + 3) * Height * Width * BytesPerFloat
-		endIdx := startIdx + (Height * Width * BytesPerFloat)
-		for i := startIdx; i < endIdx; i += 4 {
-			binary.LittleEndian.PutUint32(data[i:], healthBits)
+		for k, n := range counts {
+			set(base+1, k[0], k[1], float32(n))
 		}
+		fillPlane(base+2, float32(e.Health)/100.0)
 	}
 
 	return dataPtr

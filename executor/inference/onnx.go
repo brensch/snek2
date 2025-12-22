@@ -3,6 +3,8 @@ package inference
 import (
 	"fmt"
 	"math"
+	"os"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -14,9 +16,9 @@ import (
 const (
 	BatchSize    = 128
 	BatchTimeout = 1 * time.Millisecond
-	InputSize    = 17 * 11 * 11
-	PolicySize   = 16
-	ValueSize    = 4
+	InputSize    = 14 * 11 * 11
+	PolicySize   = 4
+	ValueSize    = 1
 )
 
 type inferenceRequest struct {
@@ -38,7 +40,23 @@ type OnnxClient struct {
 
 func NewOnnxClient(modelPath string) (*OnnxClient, error) {
 	if runtime.GOOS == "linux" {
-		ort.SetSharedLibraryPath("libonnxruntime.so")
+		if p := os.Getenv("ORT_SHARED_LIBRARY_PATH"); p != "" {
+			ort.SetSharedLibraryPath(p)
+		} else {
+			cwd, _ := os.Getwd()
+			candidates := []string{
+				"libonnxruntime.so",
+				"libonnxruntime.so.1",
+				"libonnxruntime.so.1.23.2",
+			}
+			for _, name := range candidates {
+				abs := filepath.Join(cwd, name)
+				if _, err := os.Stat(abs); err == nil {
+					ort.SetSharedLibraryPath(abs)
+					break
+				}
+			}
+		}
 	}
 
 	err := ort.InitializeEnvironment()
@@ -150,7 +168,7 @@ func (c *OnnxClient) runBatch(requests []inferenceRequest, batchInput []float32)
 	currentBatchSize := int64(len(requests))
 
 	// Create input tensor
-	inputShape := []int64{currentBatchSize, 17, 11, 11}
+	inputShape := []int64{currentBatchSize, 14, 11, 11}
 	inputTensor, err := ort.NewTensor(ort.NewShape(inputShape...), batchInput)
 	if err != nil {
 		c.failBatch(requests, err)
@@ -159,7 +177,7 @@ func (c *OnnxClient) runBatch(requests []inferenceRequest, batchInput []float32)
 	defer inputTensor.Destroy()
 
 	// Create output tensors
-	policyShape := []int64{currentBatchSize, 16}
+	policyShape := []int64{currentBatchSize, 4}
 	policyTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(policyShape...))
 	if err != nil {
 		c.failBatch(requests, err)
@@ -167,7 +185,7 @@ func (c *OnnxClient) runBatch(requests []inferenceRequest, batchInput []float32)
 	}
 	defer policyTensor.Destroy()
 
-	valueShape := []int64{currentBatchSize, 4}
+	valueShape := []int64{currentBatchSize, 1}
 	valueTensor, err := ort.NewEmptyTensor[float32](ort.NewShape(valueShape...))
 	if err != nil {
 		c.failBatch(requests, err)

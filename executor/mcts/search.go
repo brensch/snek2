@@ -2,11 +2,36 @@ package mcts
 
 import (
 	"math"
-	"sort"
 
 	pb "github.com/brensch/snek2/gen/go"
 	"github.com/brensch/snek2/rules"
 )
+
+func softmax4(logits []float32) [4]float32 {
+	var out [4]float32
+	if len(logits) < 4 {
+		return out
+	}
+	maxV := logits[0]
+	for i := 1; i < 4; i++ {
+		if logits[i] > maxV {
+			maxV = logits[i]
+		}
+	}
+	sum := float32(0)
+	for i := 0; i < 4; i++ {
+		e := float32(math.Exp(float64(logits[i] - maxV)))
+		out[i] = e
+		sum += e
+	}
+	if sum > 0 {
+		inv := 1 / sum
+		for i := 0; i < 4; i++ {
+			out[i] *= inv
+		}
+	}
+	return out
+}
 
 const (
 	VirtualLoss = float32(1.0)
@@ -67,51 +92,27 @@ func (m *MCTS) Search(rootState *pb.GameState, simulations int) (*Node, int, err
 			value = rules.GetResult(node.State)
 		} else {
 			// Inference
-			policies, values, err := m.Client.Predict(node.State)
+			policyLogits, values, err := m.Client.Predict(node.State)
 			if err != nil {
 				return nil, 0, err
 			}
 
-			// Find index of YouId in sorted snakes to match model output
-			ids := make([]string, len(node.State.Snakes))
-			for i, s := range node.State.Snakes {
-				ids[i] = s.Id
-			}
-			sort.Strings(ids)
-
-			myIndex := -1
-			for i, id := range ids {
-				if id == node.State.YouId {
-					myIndex = i
-					break
-				}
+			if len(values) > 0 {
+				value = values[0]
 			}
 
-			if myIndex != -1 {
-				if myIndex < len(values) {
-					value = values[myIndex]
-				}
+			priors := softmax4(policyLogits)
 
-				// Expand
-				legalMoves := rules.GetLegalMoves(node.State)
-				for _, moveInt := range legalMoves {
-					move := Move(moveInt)
-
-					// Get probability from policy
-					prob := float32(0)
-					// Policy is flat array: [Snake0_Move0..3, Snake1_Move0..3, ...]
-					policyIdx := (myIndex * 4) + int(move)
-					if policyIdx < len(policies) {
-						prob = policies[policyIdx]
-					}
-
-					// Create child
-					nextState := rules.NextState(node.State, int(move))
-					child := NewNode(nextState, prob)
-					node.Children[move] = child
-				}
-				node.IsExpanded = true
+			// Expand
+			legalMoves := rules.GetLegalMoves(node.State)
+			for _, moveInt := range legalMoves {
+				move := Move(moveInt)
+				prob := priors[int(move)]
+				nextState := rules.NextState(node.State, int(move))
+				child := NewNode(nextState, prob)
+				node.Children[move] = child
 			}
+			node.IsExpanded = true
 		}
 
 		// Backpropagation

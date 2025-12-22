@@ -1,8 +1,9 @@
 package discovery
 
 import (
+	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"net/http"
 	"regexp"
 	"sync"
@@ -26,7 +27,7 @@ func DefaultConfig() Config {
 			"https://play.battlesnake.com/leaderboard/standard-duels",
 		},
 		RequestDelay: 500 * time.Millisecond,
-		MaxPlayers:   100, // Check top 100 players per leaderboard by default
+		MaxPlayers:   0, // Unlimited by default
 	}
 }
 
@@ -38,6 +39,19 @@ type Worker struct {
 	knownMu  sync.RWMutex
 	gameIDRe *regexp.Regexp
 	playerRe *regexp.Regexp
+}
+
+// Stats reports what a discovery pass saw.
+//
+// KnownGameIDs includes both:
+// - duplicates across multiple players/leaderboards during discovery
+// - game IDs already present in the initial known set
+type Stats struct {
+	Leaderboards int
+	Players      int
+	GameLinks    int
+	NewGameIDs   int
+	KnownGameIDs int
 }
 
 // NewWorker creates a new discovery worker
@@ -58,23 +72,26 @@ func NewWorker(config Config, existingIDs map[string]bool) *Worker {
 	}
 }
 
-// Discover starts the discovery process and sends new game IDs to the channel
-func (w *Worker) Discover(gameIDChan chan<- string) error {
-	log.Println("[Discovery] Starting leaderboard crawl...")
-
-	totalNewGames := 0
+// Discover starts the discovery process and sends new game IDs to the channel.
+// It is cancelable via ctx.
+func (w *Worker) Discover(ctx context.Context, gameIDChan chan<- string) (Stats, error) {
+	stats := Stats{}
+	stats.Leaderboards = len(w.config.LeaderboardURLs)
 
 	for _, leaderboardURL := range w.config.LeaderboardURLs {
-		log.Printf("[Discovery] Scraping leaderboard: %s", leaderboardURL)
-
+		select {
+		case <-ctx.Done():
+			return stats, ctx.Err()
+		default:
+		}
 		// Get player usernames from this leaderboard
-		players, arenaType, err := w.getLeaderboardPlayers(leaderboardURL)
+		players, arenaType, err := w.getLeaderboardPlayers(ctx, leaderboardURL)
 		if err != nil {
-			log.Printf("[Discovery] Error getting leaderboard %s: %v", leaderboardURL, err)
+			slog.Warn("discovery: leaderboard fetch failed", "leaderboard_url", leaderboardURL, "error", err)
 			continue
 		}
-
-		log.Printf("[Discovery] Found %d players on %s leaderboard", len(players), arenaType)
+		_ = arenaType
+		stats.Players += len(players)
 
 		// Limit players if configured
 		if w.config.MaxPlayers > 0 && len(players) > w.config.MaxPlayers {
@@ -82,15 +99,19 @@ func (w *Worker) Discover(gameIDChan chan<- string) error {
 		}
 
 		// Crawl each player's game history
-		newGames := 0
 		for i, player := range players {
-			log.Printf("[Discovery] [%s] Checking player %d/%d: %s", arenaType, i+1, len(players), player.username)
-
-			gameIDs, err := w.getPlayerGames(player.statsURL)
+			_ = i
+			select {
+			case <-ctx.Done():
+				return stats, ctx.Err()
+			default:
+			}
+			gameIDs, err := w.getPlayerGames(ctx, player.statsURL)
 			if err != nil {
-				log.Printf("[Discovery] Error getting games for %s: %v", player.username, err)
+				slog.Warn("discovery: player games fetch failed", "username", player.username, "error", err)
 				continue
 			}
+			stats.GameLinks += len(gameIDs)
 
 			for _, gameID := range gameIDs {
 				w.knownMu.RLock()
@@ -102,21 +123,31 @@ func (w *Worker) Discover(gameIDChan chan<- string) error {
 					w.knownIDs[gameID] = true
 					w.knownMu.Unlock()
 
-					gameIDChan <- gameID
-					newGames++
+					select {
+					case gameIDChan <- gameID:
+						stats.NewGameIDs++
+					case <-ctx.Done():
+						return stats, ctx.Err()
+					}
+				} else {
+					stats.KnownGameIDs++
 				}
 			}
 
 			// Rate limiting
-			time.Sleep(w.config.RequestDelay)
+			if w.config.RequestDelay > 0 {
+				t := time.NewTimer(w.config.RequestDelay)
+				select {
+				case <-ctx.Done():
+					t.Stop()
+					return stats, ctx.Err()
+				case <-t.C:
+				}
+			}
 		}
-
-		log.Printf("[Discovery] Finished %s leaderboard. Found %d new games", arenaType, newGames)
-		totalNewGames += newGames
 	}
 
-	log.Printf("[Discovery] All leaderboards complete. Total new games: %d", totalNewGames)
-	return nil
+	return stats, nil
 }
 
 // playerInfo holds player data from a leaderboard
@@ -126,8 +157,8 @@ type playerInfo struct {
 }
 
 // getLeaderboardPlayers fetches player usernames from the leaderboard page
-func (w *Worker) getLeaderboardPlayers(leaderboardURL string) ([]playerInfo, string, error) {
-	req, err := http.NewRequest("GET", leaderboardURL, nil)
+func (w *Worker) getLeaderboardPlayers(ctx context.Context, leaderboardURL string) ([]playerInfo, string, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", leaderboardURL, nil)
 	if err != nil {
 		return nil, "", err
 	}
@@ -184,11 +215,11 @@ func (w *Worker) getLeaderboardPlayers(leaderboardURL string) ([]playerInfo, str
 }
 
 // getPlayerGames fetches game IDs from a player's stats page
-func (w *Worker) getPlayerGames(statsURL string) ([]string, error) {
+func (w *Worker) getPlayerGames(ctx context.Context, statsURL string) ([]string, error) {
 	var gameIDs []string
 	seen := make(map[string]bool)
 
-	req, err := http.NewRequest("GET", statsURL, nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", statsURL, nil)
 	if err != nil {
 		return nil, err
 	}

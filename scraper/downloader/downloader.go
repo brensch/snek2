@@ -1,9 +1,10 @@
 package downloader
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"log"
+	"log/slog"
 	"time"
 
 	"github.com/brensch/snek2/scraper/store"
@@ -84,18 +85,34 @@ type Death struct {
 }
 
 // DownloadGame connects to the game WebSocket and downloads all frames.
-func DownloadGame(gameID string, config Config) ([]FrameData, error) {
+// It can be cancelled via ctx (e.g. Ctrl+C / SIGTERM).
+func DownloadGame(ctx context.Context, gameID string, config Config) ([]FrameData, error) {
 	url := fmt.Sprintf(config.EngineURL, gameID)
 
 	dialer := websocket.Dialer{
 		HandshakeTimeout: config.ConnectTimeout,
 	}
 
-	conn, _, err := dialer.Dial(url, nil)
+	connectCtx, cancel := context.WithTimeout(ctx, config.ConnectTimeout)
+	defer cancel()
+
+	conn, _, err := dialer.DialContext(connectCtx, url, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect: %w", err)
 	}
 	defer conn.Close()
+
+	// Ensure ctx cancellation unblocks ReadMessage promptly.
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			_ = conn.WriteControl(websocket.CloseMessage, websocket.FormatCloseMessage(websocket.CloseGoingAway, "shutdown"), time.Now().Add(250*time.Millisecond))
+			_ = conn.Close()
+		case <-done:
+		}
+	}()
+	defer close(done)
 
 	var frames []FrameData
 
@@ -107,6 +124,11 @@ func DownloadGame(gameID string, config Config) ([]FrameData, error) {
 
 readLoop:
 	for {
+		select {
+		case <-ctx.Done():
+			return frames, ctx.Err()
+		default:
+		}
 		if streamEnded {
 			break readLoop
 		}
@@ -127,19 +149,19 @@ readLoop:
 
 		var event GameEvent
 		if err := json.Unmarshal(message, &event); err != nil {
-			log.Printf("Failed to parse event: %v", err)
+			slog.Warn("failed to parse event", "error", err)
 			continue
 		}
 
 		switch event.Type {
 		case "game_info":
 			if err := json.Unmarshal(event.Data, &gameInfo); err != nil {
-				log.Printf("Failed to parse game_info: %v", err)
+				slog.Warn("failed to parse game_info", "error", err)
 			}
 		case "frame":
 			var frame FrameData
 			if err := json.Unmarshal(event.Data, &frame); err != nil {
-				log.Printf("Failed to parse frame: %v", err)
+				slog.Warn("failed to parse frame", "error", err)
 				continue
 			}
 			frames = append(frames, frame)
