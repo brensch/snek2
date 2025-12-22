@@ -7,10 +7,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	pb "github.com/brensch/snek2/gen/go"
 	"github.com/brensch/snek2/executor/inference"
 	"github.com/brensch/snek2/executor/mcts"
 	"github.com/brensch/snek2/executor/selfplay"
+	pb "github.com/brensch/snek2/gen/go"
 	tea "github.com/charmbracelet/bubbletea"
 	"google.golang.org/protobuf/proto"
 )

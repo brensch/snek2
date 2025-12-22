@@ -7,9 +7,9 @@ import (
 	"sync"
 	"time"
 
-	pb "github.com/brensch/snek2/gen/go"
 	"github.com/brensch/snek2/executor/convert"
 	"github.com/brensch/snek2/executor/mcts"
+	pb "github.com/brensch/snek2/gen/go"
 	"github.com/brensch/snek2/rules"
 	"google.golang.org/protobuf/proto"
 )

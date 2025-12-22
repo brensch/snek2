@@ -18,51 +18,49 @@ class ResBlock(nn.Module):
         x = F.relu(x)
         return x
 
-class SnakeNet(nn.Module):
-    def __init__(self, in_channels=17, width=11, height=11):
-        super(SnakeNet, self).__init__()
+class EgoSnakeNet(nn.Module):
+    def __init__(self, width=11, height=11):
+        super(EgoSnakeNet, self).__init__()
         self.width = width
         self.height = height
-        
-        # Initial Conv
+
+        # 0. Food
+        # 1. Hazards
+        # 2. My Head
+        # 3. My Body (stacked counts)
+        # 4. My Health (global plane)
+        # 5-7. Enemy 1 (head, body, health)
+        # 8-10. Enemy 2 (head, body, health)
+        # 11-13. Enemy 3 (head, body, health)
+        in_channels = 14
+
+        # Backbone
         self.conv1 = nn.Conv2d(in_channels, 256, kernel_size=3, padding=1)
         self.bn1 = nn.BatchNorm2d(256)
-        
-        # ResNet Blocks (5 blocks)
-        self.res_blocks = nn.Sequential(
-            *[ResBlock(256) for _ in range(5)]
-        )
-        
-        # Policy Head
-        self.policy_conv = nn.Conv2d(256, 2, kernel_size=1)
-        self.policy_bn = nn.BatchNorm2d(2)
-        self.policy_fc = nn.Linear(2 * width * height, 16) # 4 snakes * 4 moves
-        
-        # Value Head
-        self.value_conv = nn.Conv2d(256, 1, kernel_size=1)
-        self.value_bn = nn.BatchNorm2d(1)
-        self.value_fc1 = nn.Linear(1 * width * height, 256)
-        self.value_fc2 = nn.Linear(256, 4) # 4 snakes
+        self.res_blocks = nn.Sequential(*[ResBlock(256) for _ in range(5)])
+
+        # Policy head: 4 move logits
+        self.policy_conv = nn.Conv2d(256, 32, kernel_size=1)
+        self.policy_bn = nn.BatchNorm2d(32)
+        self.policy_fc = nn.Linear(32 * width * height, 4)
+
+        # Value head: scalar (-1..1)
+        self.value_conv = nn.Conv2d(256, 16, kernel_size=1)
+        self.value_bn = nn.BatchNorm2d(16)
+        self.value_fc1 = nn.Linear(16 * width * height, 256)
+        self.value_fc2 = nn.Linear(256, 1)
 
     def forward(self, x):
-        # Backbone
         x = F.relu(self.bn1(self.conv1(x)))
         x = self.res_blocks(x)
-        
-        # Policy Head
+
         p = F.relu(self.policy_bn(self.policy_conv(x)))
         p = p.flatten(1)
         p = self.policy_fc(p)
-        
-        # Reshape to (Batch, 4, 4) to apply softmax per snake
-        p = p.view(-1, 4, 4)
-        p = F.softmax(p, dim=2)
-        p = p.view(-1, 16) # Flatten back
-        
-        # Value Head
+
         v = F.relu(self.value_bn(self.value_conv(x)))
         v = v.flatten(1)
         v = F.relu(self.value_fc1(v))
-        v = torch.tanh(self.value_fc2(v)) # Output -1 to 1
-        
+        v = torch.tanh(self.value_fc2(v))
+
         return p, v

@@ -4,18 +4,16 @@ import sys
 import os
 
 # Add generated code to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '../gen/python'))
+from model import EgoSnakeNet
 
-from model import SnakeNet
-
-IN_CHANNELS = 17
+IN_CHANNELS = 14
 WIDTH = 11
 HEIGHT = 11
 MODEL_PATH = "models/snake_net.onnx"
 
 def export():
     # Create model
-    model = SnakeNet(in_channels=IN_CHANNELS, width=WIDTH, height=HEIGHT)
+    model = EgoSnakeNet(width=WIDTH, height=HEIGHT)
     model.eval()
 
     # Create dummy input

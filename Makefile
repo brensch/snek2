@@ -58,16 +58,7 @@ run:
 
 # Scraper targets
 scrape:
-	go run ./scraper -db=battlesnake.db -workers=4 -max-players=50
-
-scrape-daemon:
-	go run ./scraper -db=battlesnake.db -daemon -interval=30m -auto-export -output-dir=data
-
-scrape-stats:
-	go run ./scraper -db=battlesnake.db -stats
-
-scrape-export:
-	go run ./scraper -db=battlesnake.db -export -export-path=data/scraped_training.pb -export-max=100
+	go run ./scraper -max-players=50 -out-dir=data -log-path=scraper-data/written_games.log
 
 build-scraper:
 	go build -o bin/scraper ./scraper

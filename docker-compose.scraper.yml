@@ -8,17 +8,14 @@ services:
     container_name: battlesnake-scraper
     restart: unless-stopped
     environment:
-      - DB_PATH=/data/battlesnake.db
-      - OUTPUT_DIR=/output
-      - WORKERS=4
+      - WRITTEN_LOG=/data/written_games.log
+      - OUT_DIR=/output
       - MAX_PLAYERS=100
       - DELAY=500ms
-      - INTERVAL=30m
-      - AUTO_EXPORT=true
     volumes:
-      # Database persistence
+      # Written-log persistence
       - ./scraper-data:/data
       # Training data output (mount your data folder here)
       - ./data:/output
     # Override default command if needed
-    # command: ["-daemon", "-auto-export", "-max-players=50"]
+    # command: ["-max-players=50"]

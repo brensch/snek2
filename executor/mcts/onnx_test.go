@@ -7,8 +7,8 @@ import (
 	"runtime"
 	"testing"
 
-	pb "github.com/brensch/snek2/gen/go"
 	"github.com/brensch/snek2/executor/convert"
+	pb "github.com/brensch/snek2/gen/go"
 	ort "github.com/yalue/onnxruntime_go"
 )
 

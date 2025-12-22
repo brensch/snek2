@@ -5,12 +5,9 @@ import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
-import sys
+from model import EgoSnakeNet
 
-# Add generated code to path
-sys.path.append(os.path.join(os.path.dirname(__file__), '../gen/python'))
-import snake_pb2
-from model import SnakeNet
+import polars as pl
 
 DATA_DIR = "data"
 MODEL_PATH = "models/latest.pt"
@@ -20,39 +17,48 @@ LR = 0.01             # 10x higher learning rate for faster convergence
 
 class SnakeDataset(Dataset):
     def __init__(self, file_paths):
-        self.examples = []
+        self.rows = []
         for path in file_paths:
             try:
-                with open(path, "rb") as f:
-                    data = snake_pb2.TrainingData()
-                    data.ParseFromString(f.read())
-                    self.examples.extend(data.examples)
-            except Exception as e:
+                df = pl.read_parquet(path, columns=["x", "policy", "value"])
+                x_list = df.get_column("x").to_list()
+                policy_list = df.get_column("policy").to_list()
+                value_list = df.get_column("value").to_list()
+
+                for x, p, v in zip(x_list, policy_list, value_list):
+                    if isinstance(x, memoryview):
+                        x = x.tobytes()
+                    self.rows.append((x, int(p), float(v)))
+            except (OSError, ValueError, pl.exceptions.PolarsError) as e:
                 print(f"Error reading {path}: {e}")
 
     def __len__(self):
-        return len(self.examples)
+        return len(self.rows)
 
     def __getitem__(self, idx):
-        ex = self.examples[idx]
+        x_bytes, policy_label, value_scalar = self.rows[idx]
 
-        # State
-        state = np.frombuffer(ex.state_data, dtype=np.float32).reshape(17, 11, 11).copy()
+        # State: 14x11x11 float32 (little-endian)
+        state = np.frombuffer(x_bytes, dtype=np.float32).reshape(14, 11, 11).copy()
 
-        # Policy Target
-        policy = np.array(ex.policies, dtype=np.float32)
+        # Policy: int64 class label in [0..3]
+        policy = np.int64(policy_label)
 
-        # Value Target
-        value = np.array(ex.values, dtype=np.float32)
+        # Value: float32 scalar in [-1..1]
+        value = np.float32(value_scalar)
 
-        return torch.from_numpy(state), torch.from_numpy(policy), torch.from_numpy(value)
+        return (
+            torch.from_numpy(state),
+            torch.tensor(policy, dtype=torch.long),
+            torch.tensor(value, dtype=torch.float32),
+        )
 
 def train():
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Training on {device}")
 
     # Load Data
-    files = glob.glob(os.path.join(DATA_DIR, "*.pb"))
+    files = glob.glob(os.path.join(DATA_DIR, "*.parquet"))
     if not files:
         print("No training data found.")
         return
@@ -74,7 +80,7 @@ def train():
     )
 
     # Load Model
-    model = SnakeNet(in_channels=17, width=11, height=11).to(device)
+    model = EgoSnakeNet(width=11, height=11).to(device)
     if os.path.exists(MODEL_PATH):
         print(f"Loading existing model from {MODEL_PATH}")
         model.load_state_dict(torch.load(MODEL_PATH, map_location=device))
@@ -82,8 +88,9 @@ def train():
     optimizer = optim.Adam(model.parameters(), lr=LR)
 
     # Loss Functions
-    # Policy: Cross Entropy (or KL Divergence)
+    # Policy: Cross Entropy over logits
     # Value: MSE
+    ce_loss = nn.CrossEntropyLoss()
     mse_loss = nn.MSELoss()
 
     model.train()
@@ -98,12 +105,9 @@ def train():
 
             pred_policies, pred_values = model(states)
 
-            # Policy Loss: -sum(target * log(pred))
-            # Add epsilon to avoid log(0)
-            loss_policy = -torch.sum(policies * torch.log(pred_policies + 1e-8)) / states.size(0)
+            loss_policy = ce_loss(pred_policies, policies)
 
-            # Value Loss
-            loss_value = mse_loss(pred_values, values)
+            loss_value = mse_loss(pred_values.squeeze(1), values)
 
             loss = loss_policy + loss_value
             loss.backward()

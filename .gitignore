@@ -40,3 +40,6 @@ __pycache__/
 *.db
 *.pb
 *.pt
+
+*.parquet
+*.log

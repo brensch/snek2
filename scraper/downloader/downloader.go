@@ -4,17 +4,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"sync"
-	"sync/atomic"
 	"time"
 
-	"github.com/brensch/snek2/scraper/db"
+	"github.com/brensch/snek2/scraper/store"
 	"github.com/gorilla/websocket"
 )
 
 // Config holds downloader configuration
 type Config struct {
-	NumWorkers     int
 	EngineURL      string // WebSocket URL template
 	ConnectTimeout time.Duration
 	ReadTimeout    time.Duration
@@ -23,86 +20,9 @@ type Config struct {
 // DefaultConfig returns sensible defaults
 func DefaultConfig() Config {
 	return Config{
-		NumWorkers:     4,
 		EngineURL:      "wss://engine.battlesnake.com/games/%s/events",
 		ConnectTimeout: 10 * time.Second,
 		ReadTimeout:    30 * time.Second,
-	}
-}
-
-// Stats holds download statistics
-type Stats struct {
-	GamesDownloaded int64
-	GamesSkipped    int64
-	GamesFailed     int64
-	FramesTotal     int64
-}
-
-// Worker manages a pool of game downloaders
-type Worker struct {
-	config Config
-	db     *db.DB
-	stats  Stats
-}
-
-// NewWorker creates a new download worker pool
-func NewWorker(config Config, database *db.DB) *Worker {
-	return &Worker{
-		config: config,
-		db:     database,
-	}
-}
-
-// Start begins processing game IDs from the channel
-func (w *Worker) Start(gameIDChan <-chan string, done chan<- struct{}) {
-	var wg sync.WaitGroup
-
-	// Start worker pool
-	for i := 0; i < w.config.NumWorkers; i++ {
-		wg.Add(1)
-		go func(workerID int) {
-			defer wg.Done()
-			w.worker(workerID, gameIDChan)
-		}(i)
-	}
-
-	// Wait for all workers to finish
-	wg.Wait()
-	close(done)
-}
-
-// worker processes game IDs from the channel
-func (w *Worker) worker(id int, gameIDChan <-chan string) {
-	for gameID := range gameIDChan {
-		// Check if game already exists
-		exists, err := w.db.GameExists(gameID)
-		if err != nil {
-			log.Printf("[Worker %d] Error checking game %s: %v", id, gameID, err)
-			continue
-		}
-		if exists {
-			atomic.AddInt64(&w.stats.GamesSkipped, 1)
-			continue
-		}
-
-		// Download the game
-		game, frames, err := w.downloadGame(gameID)
-		if err != nil {
-			log.Printf("[Worker %d] Failed to download %s: %v", id, gameID, err)
-			atomic.AddInt64(&w.stats.GamesFailed, 1)
-			continue
-		}
-
-		// Store in database
-		if err := w.db.InsertGame(game, frames); err != nil {
-			log.Printf("[Worker %d] Failed to store %s: %v", id, gameID, err)
-			atomic.AddInt64(&w.stats.GamesFailed, 1)
-			continue
-		}
-
-		atomic.AddInt64(&w.stats.GamesDownloaded, 1)
-		atomic.AddInt64(&w.stats.FramesTotal, int64(len(frames)))
-		log.Printf("[Worker %d] Downloaded %s: %d turns, winner: %s", id, gameID, len(frames), game.Winner)
 	}
 }
 
@@ -131,10 +51,11 @@ type RulesetInfo struct {
 
 // FrameData from "frame" events
 type FrameData struct {
-	Turn   int         `json:"turn"`
-	Snakes []SnakeData `json:"snakes"`
-	Food   []Coord     `json:"food"`
-	Board  BoardData   `json:"board,omitempty"`
+	Turn    int         `json:"turn"`
+	Snakes  []SnakeData `json:"snakes"`
+	Food    []Coord     `json:"food"`
+	Hazards []Coord     `json:"hazards,omitempty"`
+	Board   BoardData   `json:"board,omitempty"`
 }
 
 type SnakeData struct {
@@ -152,8 +73,9 @@ type Coord struct {
 }
 
 type BoardData struct {
-	Width  int `json:"width"`
-	Height int `json:"height"`
+	Width   int     `json:"width"`
+	Height  int     `json:"height"`
+	Hazards []Coord `json:"hazards,omitempty"`
 }
 
 type Death struct {
@@ -161,26 +83,34 @@ type Death struct {
 	Turn  int    `json:"turn"`
 }
 
-// downloadGame connects to the game WebSocket and downloads all frames
-func (w *Worker) downloadGame(gameID string) (db.Game, []db.Frame, error) {
-	url := fmt.Sprintf(w.config.EngineURL, gameID)
+// DownloadGame connects to the game WebSocket and downloads all frames.
+func DownloadGame(gameID string, config Config) ([]FrameData, error) {
+	url := fmt.Sprintf(config.EngineURL, gameID)
 
 	dialer := websocket.Dialer{
-		HandshakeTimeout: w.config.ConnectTimeout,
+		HandshakeTimeout: config.ConnectTimeout,
 	}
 
 	conn, _, err := dialer.Dial(url, nil)
 	if err != nil {
-		return db.Game{}, nil, fmt.Errorf("failed to connect: %w", err)
+		return nil, fmt.Errorf("failed to connect: %w", err)
 	}
 	defer conn.Close()
 
-	var frames []db.Frame
-	var gameInfo GameInfo
-	var lastFrame *FrameData
+	var frames []FrameData
 
+	// We still parse game_info so we stay compatible with the stream, but we don't persist it.
+	var gameInfo GameInfo
+	_ = gameInfo
+
+	streamEnded := false
+
+readLoop:
 	for {
-		conn.SetReadDeadline(time.Now().Add(w.config.ReadTimeout))
+		if streamEnded {
+			break readLoop
+		}
+		conn.SetReadDeadline(time.Now().Add(config.ReadTimeout))
 
 		_, message, err := conn.ReadMessage()
 		if err != nil {
@@ -190,10 +120,9 @@ func (w *Worker) downloadGame(gameID string) (db.Game, []db.Frame, error) {
 			}
 			// Timeout or unexpected close
 			if len(frames) > 0 {
-				// We got some data, use it
-				break
+				break readLoop
 			}
-			return db.Game{}, nil, fmt.Errorf("read error: %w", err)
+			return nil, fmt.Errorf("read error: %w", err)
 		}
 
 		var event GameEvent
@@ -207,68 +136,142 @@ func (w *Worker) downloadGame(gameID string) (db.Game, []db.Frame, error) {
 			if err := json.Unmarshal(event.Data, &gameInfo); err != nil {
 				log.Printf("Failed to parse game_info: %v", err)
 			}
-
 		case "frame":
-			var frameData FrameData
-			if err := json.Unmarshal(event.Data, &frameData); err != nil {
+			var frame FrameData
+			if err := json.Unmarshal(event.Data, &frame); err != nil {
 				log.Printf("Failed to parse frame: %v", err)
 				continue
 			}
-
-			frames = append(frames, db.Frame{
-				GameID:  gameID,
-				Turn:    frameData.Turn,
-				RawJSON: string(event.Data),
-			})
-			lastFrame = &frameData
-
+			frames = append(frames, frame)
 		case "game_end":
-			// Game is complete
-			break
+			streamEnded = true
+		default:
+			// Ignore other event types.
 		}
 	}
 
-	// Determine winner from last frame
-	winner := determineWinner(lastFrame)
-
-	game := db.Game{
-		ID:      gameID,
-		Winner:  winner,
-		Ruleset: gameInfo.Ruleset.Name,
-	}
-
-	return game, frames, nil
+	return frames, nil
 }
 
-// determineWinner analyzes the final frame to find the winner
-func determineWinner(frame *FrameData) string {
-	if frame == nil {
-		return "unknown"
-	}
+func BuildTrainingRows(gameID string, frames []FrameData) []store.TrainingRow {
+	outcomes := determineOutcomes(frames)
 
-	var alive []SnakeData
-	for _, snake := range frame.Snakes {
-		if snake.Death == nil && snake.Health > 0 {
-			alive = append(alive, snake)
+	var rows []store.TrainingRow
+
+	for i := 0; i < len(frames)-1; i++ {
+		cur := &frames[i]
+		next := &frames[i+1]
+
+		// next heads lookup
+		nextHead := make(map[string]Coord, len(next.Snakes))
+		for _, s := range next.Snakes {
+			if len(s.Body) == 0 {
+				continue
+			}
+			nextHead[s.ID] = s.Body[0]
+		}
+
+		width := int32(Width)
+		height := int32(Height)
+		if cur.Board.Width > 0 {
+			width = int32(cur.Board.Width)
+		}
+		if cur.Board.Height > 0 {
+			height = int32(cur.Board.Height)
+		}
+
+		for _, s := range cur.Snakes {
+			if s.Death != nil || s.Health <= 0 || len(s.Body) == 0 {
+				continue
+			}
+			nh, ok := nextHead[s.ID]
+			if !ok {
+				continue
+			}
+			ch := s.Body[0]
+			dx := nh.X - ch.X
+			dy := nh.Y - ch.Y
+
+			move := -1
+			switch {
+			case dy == 1 && dx == 0:
+				move = 0 // Up
+			case dy == -1 && dx == 0:
+				move = 1 // Down
+			case dx == -1 && dy == 0:
+				move = 2 // Left
+			case dx == 1 && dy == 0:
+				move = 3 // Right
+			}
+			if move < 0 {
+				continue
+			}
+
+			x := EgoStateToBytes(cur, s.ID)
+			value := float32(0)
+			if v, ok := outcomes[s.ID]; ok {
+				value = v
+			}
+
+			rows = append(rows, store.TrainingRow{
+				GameID: gameID,
+				Turn:   int32(cur.Turn),
+				EgoID:  s.ID,
+				Width:  width,
+				Height: height,
+				X:      x,
+				Policy: int32(move),
+				Value:  value,
+			})
 		}
 	}
 
-	if len(alive) == 1 {
-		return alive[0].Name
-	} else if len(alive) == 0 {
-		return "draw"
-	}
-
-	// Multiple alive at end - might be max turns or simultaneous death
-	return "draw"
+	return rows
 }
 
-// GetStats returns current statistics
-func (w *Worker) GetStats() Stats {
-	return Stats{
-		GamesDownloaded: atomic.LoadInt64(&w.stats.GamesDownloaded),
-		GamesSkipped:    atomic.LoadInt64(&w.stats.GamesSkipped),
-		GamesFailed:     atomic.LoadInt64(&w.stats.GamesFailed),
-		FramesTotal:     atomic.LoadInt64(&w.stats.FramesTotal),
+func determineOutcomes(frames []FrameData) map[string]float32 {
+	outcomes := make(map[string]float32)
+	if len(frames) == 0 {
+		return outcomes
 	}
+
+	last := frames[len(frames)-1]
+
+	all := make(map[string]bool)
+	for _, f := range frames {
+		for _, s := range f.Snakes {
+			all[s.ID] = true
+		}
+	}
+
+	alive := make(map[string]bool)
+	aliveCount := 0
+	for _, s := range last.Snakes {
+		if s.Death == nil && s.Health > 0 {
+			alive[s.ID] = true
+			aliveCount++
+		}
+	}
+
+	// Value target in [-1..1]
+	// - solo winner: 1
+	// - draw / multiple alive at end: 0
+	// - dead: -1
+	for id := range all {
+		if aliveCount == 1 && alive[id] {
+			outcomes[id] = 1.0
+			continue
+		}
+		if aliveCount == 0 {
+			outcomes[id] = 0.0
+			continue
+		}
+		if alive[id] {
+			outcomes[id] = 0.0
+			continue
+		}
+		outcomes[id] = -1.0
+	}
+
+	return outcomes
 }
