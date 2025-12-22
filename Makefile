@@ -66,7 +66,7 @@ docker-scraper-stop:
 
 # Or use docker-compose
 docker-scraper-up:
-	docker-compose -f docker-compose.scraper.yml up -d --build
+	docker compose up -d --build
 
 docker-scraper-down:
-	docker-compose -f docker-compose.scraper.yml down
+	docker compose down
