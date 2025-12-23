@@ -18,6 +18,42 @@ type OnnxPool struct {
 	rr      atomic.Uint64
 }
 
+func (p *OnnxPool) Stats() RuntimeStats {
+	var batches int64
+	var items int64
+	var runNanos int64
+	var last int64
+	queue := 0
+
+	for _, c := range p.clients {
+		st := c.Stats()
+		batches += st.TotalBatches
+		items += st.TotalItems
+		runNanos += st.TotalRunNanos
+		queue += st.QueueLen
+		if st.LastBatchSize > last {
+			last = st.LastBatchSize
+		}
+	}
+
+	avgBatch := 0.0
+	avgRunMs := 0.0
+	if batches > 0 {
+		avgBatch = float64(items) / float64(batches)
+		avgRunMs = (float64(runNanos) / 1e6) / float64(batches)
+	}
+
+	return RuntimeStats{
+		TotalBatches:  batches,
+		TotalItems:    items,
+		TotalRunNanos: runNanos,
+		LastBatchSize: last,
+		QueueLen:      queue,
+		AvgBatchSize:  avgBatch,
+		AvgRunMs:      avgRunMs,
+	}
+}
+
 func NewOnnxClientPool(modelPath string, sessions int) (*OnnxPool, error) {
 	return NewOnnxClientPoolWithConfig(modelPath, sessions, OnnxClientConfig{BatchSize: DefaultBatchSize, BatchTimeout: DefaultBatchTimeout})
 }

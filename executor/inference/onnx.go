@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/brensch/snek2/executor/convert"
@@ -30,6 +31,16 @@ type OnnxClientConfig struct {
 	BatchTimeout time.Duration
 }
 
+type RuntimeStats struct {
+	TotalBatches  int64
+	TotalItems    int64
+	TotalRunNanos int64
+	LastBatchSize int64
+	QueueLen      int
+	AvgBatchSize  float64
+	AvgRunMs      float64
+}
+
 type inferenceRequest struct {
 	inputPtr *[]float32
 	respChan chan inferenceResponse
@@ -46,6 +57,11 @@ type OnnxClient struct {
 	session      *ort.DynamicAdvancedSession
 	requestsChan chan inferenceRequest
 	cfg          OnnxClientConfig
+
+	totalBatches  atomic.Int64
+	totalItems    atomic.Int64
+	totalRunNanos atomic.Int64
+	lastBatchSize atomic.Int64
 }
 
 var ortInitOnce sync.Once
@@ -191,6 +207,29 @@ func (c *OnnxClient) Close() error {
 	return c.session.Destroy()
 }
 
+func (c *OnnxClient) Stats() RuntimeStats {
+	batches := c.totalBatches.Load()
+	items := c.totalItems.Load()
+	runNanos := c.totalRunNanos.Load()
+
+	avgBatch := 0.0
+	avgRunMs := 0.0
+	if batches > 0 {
+		avgBatch = float64(items) / float64(batches)
+		avgRunMs = (float64(runNanos) / 1e6) / float64(batches)
+	}
+
+	return RuntimeStats{
+		TotalBatches:  batches,
+		TotalItems:    items,
+		TotalRunNanos: runNanos,
+		LastBatchSize: c.lastBatchSize.Load(),
+		QueueLen:      len(c.requestsChan),
+		AvgBatchSize:  avgBatch,
+		AvgRunMs:      avgRunMs,
+	}
+}
+
 func (c *OnnxClient) Predict(state *game.GameState) ([]float32, []float32, error) {
 	floatsPtr := convert.StateToFloat32(state)
 
@@ -208,37 +247,87 @@ func (c *OnnxClient) batchLoop() {
 	batchInput := make([]float32, 0, c.cfg.BatchSize*InputSize)
 	requests := make([]inferenceRequest, 0, c.cfg.BatchSize)
 
-	ticker := time.NewTicker(c.cfg.BatchTimeout)
-	defer ticker.Stop()
+	var timer *time.Timer
+	stopTimer := func() {
+		if timer == nil {
+			return
+		}
+		if !timer.Stop() {
+			select {
+			case <-timer.C:
+			default:
+			}
+		}
+		timer = nil
+	}
+
+	appendReq := func(req inferenceRequest) {
+		requests = append(requests, req)
+		if req.inputPtr != nil {
+			batchInput = append(batchInput, (*req.inputPtr)...)
+			convert.PutFloatBuffer(req.inputPtr)
+		}
+	}
+
+	resetBatch := func() {
+		requests = requests[:0]
+		batchInput = batchInput[:0]
+		stopTimer()
+	}
+
+	drain := func() {
+		for len(requests) < c.cfg.BatchSize {
+			select {
+			case req := <-c.requestsChan:
+				appendReq(req)
+			default:
+				return
+			}
+		}
+	}
 
 	for {
-		select {
-		case req := <-c.requestsChan:
-			requests = append(requests, req)
-			if req.inputPtr != nil {
-				batchInput = append(batchInput, (*req.inputPtr)...)
-				convert.PutFloatBuffer(req.inputPtr)
-			}
-
+		if len(requests) == 0 {
+			// Idle: block waiting for the first request.
+			req := <-c.requestsChan
+			appendReq(req)
+			drain()
 			if len(requests) >= c.cfg.BatchSize {
 				c.runBatch(requests, batchInput)
-				// Reset
-				requests = requests[:0]
-				batchInput = batchInput[:0]
+				resetBatch()
+				continue
 			}
-		case <-ticker.C:
+			// Start per-batch timer after first item.
+			timer = time.NewTimer(c.cfg.BatchTimeout)
+			continue
+		}
+
+		// Have pending requests: try to fill more, otherwise wait.
+		drain()
+		if len(requests) >= c.cfg.BatchSize {
+			c.runBatch(requests, batchInput)
+			resetBatch()
+			continue
+		}
+
+		select {
+		case req := <-c.requestsChan:
+			appendReq(req)
+			// Loop again to drain/fill.
+		case <-timer.C:
 			if len(requests) > 0 {
 				c.runBatch(requests, batchInput)
-				// Reset
-				requests = requests[:0]
-				batchInput = batchInput[:0]
 			}
+			resetBatch()
 		}
 	}
 }
 
 func (c *OnnxClient) runBatch(requests []inferenceRequest, batchInput []float32) {
 	currentBatchSize := int64(len(requests))
+	c.totalBatches.Add(1)
+	c.totalItems.Add(currentBatchSize)
+	c.lastBatchSize.Store(currentBatchSize)
 
 	// Create input tensor
 	inputShape := []int64{currentBatchSize, 14, 11, 11}
@@ -267,11 +356,13 @@ func (c *OnnxClient) runBatch(requests []inferenceRequest, batchInput []float32)
 	defer valueTensor.Destroy()
 
 	// Run inference
+	runStart := time.Now()
 	err = c.session.Run([]ort.Value{inputTensor}, []ort.Value{policyTensor, valueTensor})
 	if err != nil {
 		c.failBatch(requests, err)
 		return
 	}
+	c.totalRunNanos.Add(time.Since(runStart).Nanoseconds())
 
 	// Get outputs
 	policyData := policyTensor.GetData()

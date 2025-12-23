@@ -6,12 +6,15 @@ VENV_DIR = .venv
 PYTHON = $(VENV_DIR)/bin/python
 PIP = $(VENV_DIR)/bin/pip
 
-# Executor tuning (override like: make generate ONNX_BATCH_SIZE=256)
+# Executor tuning (override like: make generate WORKERS=256 ONNX_BATCH_SIZE=512)
 OUT_DIR ?= data/generated
 WORKERS ?= 128
 GAMES_PER_FLUSH ?= 50
 ONNX_SESSIONS ?= 1
-ONNX_BATCH_SIZE ?= 512
+# Effective max in-flight inference requests is ~ WORKERS * 2 (two snakes per game).
+# Default batch size to that so we can actually fill batches.
+MAX_INFLIGHT ?= $(shell echo $$(( $(WORKERS) * 2 )) )
+ONNX_BATCH_SIZE ?= $(MAX_INFLIGHT)
 ONNX_BATCH_TIMEOUT ?= 2ms
 
 all:

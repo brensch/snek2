@@ -247,7 +247,6 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 	return rows, GameResult{WinnerId: winnerId, Steps: int(state.Turn)}
 }
 
-
 func createInitialState(rng *rand.Rand) *game.GameState {
 	state := &game.GameState{
 		Width:  11,

@@ -159,6 +159,7 @@ func main() {
 
 	var predictor mcts.Predictor
 	var closer interface{ Close() error }
+	var statsProvider any
 	onnxCfg := inference.OnnxClientConfig{BatchSize: *onnxBatchSize, BatchTimeout: *onnxBatchTimeout}
 	if *onnxSessions <= 1 {
 		onnxClient, err := inference.NewOnnxClientWithConfig(modelPath, onnxCfg)
@@ -167,6 +168,7 @@ func main() {
 		}
 		predictor = onnxClient
 		closer = onnxClient
+		statsProvider = onnxClient
 	} else {
 		pool, err := inference.NewOnnxClientPoolWithConfig(modelPath, *onnxSessions, onnxCfg)
 		if err != nil {
@@ -174,6 +176,7 @@ func main() {
 		}
 		predictor = pool
 		closer = pool
+		statsProvider = pool
 	}
 	defer func() {
 		if closer != nil {
@@ -190,6 +193,13 @@ func main() {
 	// Each worker runs sequential MCTS with local inference.
 	// 16 workers for 16 threads.
 	log.Printf("Starting Self-Play with %d workers", *workers)
+	// In this self-play setup there are 2 snakes per game; each snake's MCTS runs sequentially
+	// and can only have ~1 inference request in flight. So total in-flight requests is roughly
+	// workers * 2. If batch size is larger than that, you'll almost never fill batches.
+	maxInflight := (*workers) * 2
+	if *onnxBatchSize > maxInflight {
+		log.Printf("NOTE: onnx-batch-size=%d > max in-flight (~workers*2=%d). Effective batch will cap near %d; consider increasing -workers or lowering -onnx-batch-size.", *onnxBatchSize, maxInflight, maxInflight)
+	}
 
 	updates := make(chan GameUpdate, *workers)
 	writeReqs := make(chan gameWriteRequest, (*workers)*4)
@@ -263,7 +273,14 @@ func main() {
 			duration := time.Since(startTime)
 			moves := totalMoves.Load()
 			inferences := totalInferences.Load()
-			log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f", float64(moves)/duration.Seconds(), float64(inferences)/duration.Seconds())
+			movesPerSec := float64(moves) / duration.Seconds()
+			infPerSec := float64(inferences) / duration.Seconds()
+			if sp, ok := statsProvider.(interface{ Stats() inference.RuntimeStats }); ok {
+				st := sp.Stats()
+				log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f | batch avg=%.1f last=%d q=%d run avg=%.2fms", movesPerSec, infPerSec, st.AvgBatchSize, st.LastBatchSize, st.QueueLen, st.AvgRunMs)
+			} else {
+				log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f", movesPerSec, infPerSec)
+			}
 		}
 	}
 }
