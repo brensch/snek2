@@ -208,6 +208,27 @@ func main() {
 	updates := make(chan GameUpdate, *workers)
 	writeReqs := make(chan gameWriteRequest, (*workers)*4)
 
+	// If max-games is set, we must prevent more than that many games from
+	// starting concurrently across workers. The previous approach cancelled the
+	// context when the *completed* count reached max-games, which caused many
+	// in-flight games to abort and still be counted. Here we cap the number of
+	// games started and allow in-flight games to finish naturally.
+	var startedGames atomic.Int64
+	acquireGameStartSlot := func() bool {
+		if *maxGames <= 0 {
+			return true
+		}
+		for {
+			cur := startedGames.Load()
+			if cur >= *maxGames {
+				return false
+			}
+			if startedGames.CompareAndSwap(cur, cur+1) {
+				return true
+			}
+		}
+	}
+
 	writerDone := make(chan struct{})
 	go func() {
 		parquetWriterLoop(*outDir, *gamesPerFlush, writeReqs)
@@ -229,6 +250,10 @@ func main() {
 				default:
 				}
 
+				if !acquireGameStartSlot() {
+					return
+				}
+
 				// Run one game
 				// Disable verbose for TUI
 				onStep := func() {
@@ -237,10 +262,6 @@ func main() {
 				examples, result := selfplay.PlayGame(ctx, workerId, mcts.Config{Cpuct: 1.0}, c, trace, onStep)
 				total := totalGames.Add(1)
 				log.Printf("finished game number %d", total)
-				if *maxGames > 0 && total >= *maxGames {
-					// Cancel the whole run after the target number of games.
-					cancel()
-				}
 
 				if len(examples) > 0 {
 					writeReqs <- gameWriteRequest{rows: examples}
@@ -258,6 +279,12 @@ func main() {
 		}(i)
 	}
 
+	workersDone := make(chan struct{})
+	go func() {
+		workerWG.Wait()
+		close(workersDone)
+	}()
+
 	// p := tea.NewProgram(initialModel(updates), tea.WithAltScreen())
 	// if _, err := p.Run(); err != nil {
 	// 	log.Fatal(err)
@@ -272,7 +299,13 @@ func main() {
 		select {
 		case <-ctx.Done():
 			log.Printf("Shutdown requested; waiting for workers to finish current games...")
-			workerWG.Wait()
+			<-workersDone
+			close(writeReqs)
+			<-writerDone
+			log.Printf("Shutdown complete: final parquet flush done (games=%d)", totalGames.Load())
+			return
+		case <-workersDone:
+			// Normal completion (e.g., -max-games reached).
 			close(writeReqs)
 			<-writerDone
 			log.Printf("Shutdown complete: final parquet flush done (games=%d)", totalGames.Load())

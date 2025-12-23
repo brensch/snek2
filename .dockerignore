@@ -1,30 +1,53 @@
-# Virtual environment
+
+# =============================
+# Huge runtime / training data
+# =============================
+data/
+processed/
+scraper-data/
+scraper-data/**
+*.parquet
+
+# Local training scratch
+.train_sets/
+.train_smoke/
+
+# Model artifacts (kept on host; compose mounts the repo)
+models/
+*.pt
+*.onnx
+
+# Large archives / dumps
+*.tgz
+*.tar
+*.tar.gz
+*.zip
+
+# =============================
+# Local dev / caches
+# =============================
 .venv/
 venv/
 env/
-
-# Python cache
 __pycache__/
+**/__pycache__/
 *.py[cod]
 *.pyo
 *.pyd
 .Python
 
-# Data files (large!)
-data/
-*.pb
-*.pt
-*.onnx
-scraper-data/
+node_modules/
+
+# Go caches (if present)
+.cache/
+
+# Logs / temp
+*.log
+*.tmp
+
+# Databases
+*.db
 battlesnake.db
-
-# Models
-models/
-
-# Build artifacts
-bin/
-*.so
-*.so.*
 
 # Git
 .git/
@@ -36,17 +59,11 @@ bin/
 *.swp
 *.swo
 
-# Infrastructure / deployment
-infrastructure/
-
-# Temporary files
-*.log
-*.tmp
-.env
-
-# OS files
+# OS
 .DS_Store
 Thumbs.db
 
-# Test files
-*_test.go
+# Build artifacts
+bin/
+*.so
+*.so.*

@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # Build stage
 FROM golang:1.25.5-bookworm AS builder
 
@@ -5,10 +7,12 @@ WORKDIR /app
 
 # Copy go mod files first for caching
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
 
-# Copy source code
-COPY . .
+# Copy only scraper sources (avoid invalidating the build when unrelated files change)
+COPY scraper/ ./scraper/
 
 # Build the scraper
 RUN CGO_ENABLED=0 GOOS=linux go build -o /scraper ./scraper

@@ -10,9 +10,9 @@ set -euo pipefail
 : "${MODEL_DIR:=models}"
 : "${HISTORY_DIR:=${MODEL_DIR}/history}"
 
-: "${GENERATE_GAMES:=100}"      # per cycle
+: "${GENERATE_GAMES:=128}"        # per cycle
 : "${WORKERS:=128}"
-: "${GAMES_PER_FLUSH:=50}"
+: "${GAMES_PER_FLUSH:=64}"
 : "${ONNX_SESSIONS:=1}"
 : "${ONNX_BATCH_SIZE:=0}"        # 0 = executor default
 : "${ONNX_BATCH_TIMEOUT:=2ms}"
@@ -22,7 +22,8 @@ set -euo pipefail
 : "${TRAIN_LR:=0.01}"
 
 : "${SLEEP_BETWEEN_CYCLES:=0}"   # seconds
-: "${MIN_FILE_AGE_SECONDS:=30}"  # only consume shards older than this (avoid racing writers)
+: "${MIN_FILE_AGE_SECONDS:=0}"   # 0 disables age gating (writers use atomic tmp+rename)
+: "${ARCHIVE_EXISTING_ON_START:=1}"  # move existing shards to processed/* before first cycle
 
 # If running as a non-root user in a container, ensure we have a writable HOME/cache.
 # Some environments set HOME=/, which is not writable.
@@ -38,6 +39,25 @@ export GOMODCACHE="${GOMODCACHE:-${GOPATH}/pkg/mod}"
 mkdir -p "${XDG_CACHE_HOME}" "${GOCACHE}" "${GOMODCACHE}" || true
 
 mkdir -p "${GENERATED_DIR}" "${SCRAPED_DIR}" "${PROCESSED_DIR}/generated" "${PROCESSED_DIR}/scraped" "${HISTORY_DIR}"
+
+if [[ "${ARCHIVE_EXISTING_ON_START}" == "1" ]]; then
+  # Treat any pre-existing shards as "old" and move them out of the active dirs
+  # so cycle 1 trains only on newly created data.
+  shopt -s nullglob
+  old_gen=("${GENERATED_DIR}"/*.parquet)
+  old_scr=("${SCRAPED_DIR}"/*.parquet)
+  shopt -u nullglob
+
+  if [[ ${#old_gen[@]} -gt 0 || ${#old_scr[@]} -gt 0 ]]; then
+    echo "[startup] archiving existing shards: ${#old_gen[@]} generated + ${#old_scr[@]} scraped"
+    for f in "${old_gen[@]}"; do
+      mv -f "${f}" "${PROCESSED_DIR}/generated/" || true
+    done
+    for f in "${old_scr[@]}"; do
+      mv -f "${f}" "${PROCESSED_DIR}/scraped/" || true
+    done
+  fi
+fi
 
 cycle=0
 while true; do
@@ -81,20 +101,19 @@ while true; do
   go run ./executor "${gen_args[@]}"
 
   # Build an explicit per-cycle training set (symlinks) so we can archive consumed shards.
-  train_dir="/tmp/snek2_train_${ts}"
+  train_dir="/workspace/.train_sets/snek2_train_${ts}"
   mkdir -p "${train_dir}"
 
-  # Only include fully-written parquet shards (exclude tmp and very recent files).
-  # Use find -mmin so we don't depend on GNU stat flags.
-  age_mins=$(python3 - <<'PY'
-import os
-sec = int(os.environ.get('MIN_FILE_AGE_SECONDS','30'))
-print(max(1, (sec + 59)//60))
-PY
-)
-
-  mapfile -t gen_files < <(find "${GENERATED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" -mmin "+${age_mins}" 2>/dev/null | sort)
-  mapfile -t scr_files < <(find "${SCRAPED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" -mmin "+${age_mins}" 2>/dev/null | sort)
+  # Only include fully-written parquet shards (exclude tmp).
+  # If MIN_FILE_AGE_SECONDS>0, additionally skip very recent files.
+  if [[ "${MIN_FILE_AGE_SECONDS}" =~ ^[0-9]+$ ]] && [[ "${MIN_FILE_AGE_SECONDS}" -gt 0 ]]; then
+    cutoff_epoch=$(date -d "-${MIN_FILE_AGE_SECONDS} seconds" +%s)
+    mapfile -t gen_files < <(find "${GENERATED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" ! -newermt "@${cutoff_epoch}" 2>/dev/null | sort)
+    mapfile -t scr_files < <(find "${SCRAPED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" ! -newermt "@${cutoff_epoch}" 2>/dev/null | sort)
+  else
+    mapfile -t gen_files < <(find "${GENERATED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" 2>/dev/null | sort)
+    mapfile -t scr_files < <(find "${SCRAPED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" 2>/dev/null | sort)
+  fi
 
   if [[ ${#gen_files[@]} -eq 0 && ${#scr_files[@]} -eq 0 ]]; then
     echo "[cycle ${cycle}] no eligible parquet shards yet; skipping training"
@@ -107,12 +126,14 @@ PY
 
   i=0
   for f in "${gen_files[@]}"; do
-    ln -sf "${f}" "${train_dir}/generated_${i}.parquet"
+    f_abs="$(realpath "${f}" 2>/dev/null || readlink -f "${f}" 2>/dev/null || echo "${f}")"
+    ln -sf "${f_abs}" "${train_dir}/generated_${i}.parquet"
     i=$((i+1))
   done
   j=0
   for f in "${scr_files[@]}"; do
-    ln -sf "${f}" "${train_dir}/scraped_${j}.parquet"
+    f_abs="$(realpath "${f}" 2>/dev/null || readlink -f "${f}" 2>/dev/null || echo "${f}")"
+    ln -sf "${f_abs}" "${train_dir}/scraped_${j}.parquet"
     j=$((j+1))
   done
 

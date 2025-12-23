@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1.7
 FROM golang:1.25.5-bookworm
 
 WORKDIR /workspace
@@ -14,17 +15,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Install Python deps (torch/polars/etc)
 COPY requirements.txt /tmp/requirements.txt
 RUN python3 -m venv /opt/venv \
-  && /opt/venv/bin/python -m pip install --upgrade pip \
-  && /opt/venv/bin/python -m pip install --no-cache-dir -r /tmp/requirements.txt
+  && /opt/venv/bin/python -m pip install --upgrade pip
+
+RUN --mount=type=cache,target=/root/.cache/pip \
+    /opt/venv/bin/python -m pip install -r /tmp/requirements.txt
 
 ENV PATH=/opt/venv/bin:$PATH
 
 # Pre-fetch Go deps for faster startup
 COPY go.mod go.sum ./
-RUN go mod download
+RUN --mount=type=cache,target=/go/pkg/mod \
+  --mount=type=cache,target=/root/.cache/go-build \
+  go mod download
 
-# Copy the repo
-COPY . .
+# Copy the orchestrator entrypoint script into the image so the container can
+# start even before the repo is bind-mounted.
+COPY infrastructure/pipeline/orchestrate.sh /workspace/infrastructure/pipeline/orchestrate.sh
+RUN chmod +x /workspace/infrastructure/pipeline/orchestrate.sh
 
 ENV PYTHONUNBUFFERED=1
 

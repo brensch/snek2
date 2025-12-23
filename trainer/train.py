@@ -507,18 +507,32 @@ def train():
             pass
 
     # Load Data
-    # Allow nested layout (e.g. data/generated/*.parquet and data/scraped/*.parquet)
-    # and avoid partially-written tmp shards.
-    files = glob.glob(os.path.join(args.data_dir, "**", "*.parquet"), recursive=True)
-    files = [
-        f
-        for f in files
-        if os.path.isfile(f)
-        and ("/tmp/" not in f.replace("\\", "/"))
-        and ("/generated/tmp/" not in f.replace("\\", "/"))
-        and ("/scraped/tmp/" not in f.replace("\\", "/"))
-        and ("/processed/" not in f.replace("\\", "/"))
+    # Discover parquet shards in both the root and nested subdirectories.
+    # Note: Python's glob("**/*.parquet", recursive=True) does NOT reliably include
+    # top-level files across versions/patterns, so we explicitly include both.
+    patterns = [
+        os.path.join(args.data_dir, "*.parquet"),
+        os.path.join(args.data_dir, "**", "*.parquet"),
     ]
+    discovered: set[str] = set()
+    for pattern in patterns:
+        discovered.update(glob.glob(pattern, recursive=True))
+
+    files = []
+    for f in discovered:
+        f_norm = f.replace("\\", "/")
+        if not os.path.isfile(f):
+            continue
+        if "/tmp/" in f_norm:
+            continue
+        if "/generated/tmp/" in f_norm:
+            continue
+        if "/scraped/tmp/" in f_norm:
+            continue
+        if "/processed/" in f_norm:
+            continue
+        files.append(f)
+
     files.sort()
     if not files:
         print("No training data found.")
