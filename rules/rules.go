@@ -126,14 +126,20 @@ func NextState(state *game.GameState, move int) *game.GameState {
 	newBody := []game.Point{newHead}
 	newBody = append(newBody, you.Body...)
 
+	// Always do a normal move first (tail advances), then if we ate food,
+	// grow by adding one segment at the (new) tail.
+	if len(newBody) > 0 {
+		newBody = newBody[:len(newBody)-1]
+	}
+
 	if ateFood {
 		you.Health = 100
+		if len(newBody) > 0 {
+			tail := newBody[len(newBody)-1]
+			newBody = append(newBody, tail)
+		}
 	} else {
 		you.Health--
-		// Remove tail
-		if len(newBody) > 0 {
-			newBody = newBody[:len(newBody)-1]
-		}
 	}
 	you.Body = newBody
 
@@ -210,13 +216,20 @@ func NextStateSimultaneous(state *game.GameState, moves map[string]int) *game.Ga
 		newBody := []game.Point{newHead}
 		newBody = append(newBody, s.Body...)
 
+		// Always do a normal move first (tail advances), then if we ate food,
+		// grow by adding one segment at the (new) tail.
+		if len(newBody) > 0 {
+			newBody = newBody[:len(newBody)-1]
+		}
+
 		if snakeAte[s.Id] {
 			s.Health = 100
+			if len(newBody) > 0 {
+				tail := newBody[len(newBody)-1]
+				newBody = append(newBody, tail)
+			}
 		} else {
 			s.Health--
-			if len(newBody) > 0 {
-				newBody = newBody[:len(newBody)-1]
-			}
 		}
 		s.Body = newBody
 	}
