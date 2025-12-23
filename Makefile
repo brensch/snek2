@@ -64,7 +64,7 @@ generate:
 
 # Scraper targets
 scrape:
-	go run ./scraper -out-dir=data -log-path=scraper-data/written_games.log
+	go run ./scraper -out-dir=data/scraped -log-path=scraper-data/written_games.log
 
 build-scraper:
 	go build -o bin/scraper ./scraper

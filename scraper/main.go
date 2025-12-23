@@ -19,7 +19,7 @@ import (
 
 func main() {
 	// Minimal flags (favor simplicity)
-	outDir := flag.String("out-dir", getEnvOrDefault("OUT_DIR", "data"), "Directory to write batch .parquet files")
+	outDir := flag.String("out-dir", getEnvOrDefault("OUT_DIR", "data/scraped"), "Directory to write batch .parquet files")
 	logPath := flag.String("log-path", getEnvOrDefault("WRITTEN_LOG", "scraper-data/written_games.log"), "Append-only log of game IDs already written")
 	logLevel := flag.String("log-level", getEnvOrDefault("LOG_LEVEL", "info"), "Log level: debug|info|warn|error")
 	flushGames := flag.Int("flush-games", getEnvIntOrDefault("FLUSH_GAMES", 50), "Flush when buffered games reaches this count")

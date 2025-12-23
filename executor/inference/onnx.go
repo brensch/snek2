@@ -122,17 +122,21 @@ func NewOnnxClientWithConfig(modelPath string, cfg OnnxClientConfig) (*OnnxClien
 	options.SetInterOpNumThreads(1)
 
 	// Try to use CUDA if available
-	cudaOptions, err := ort.NewCUDAProviderOptions()
-	if err == nil {
-		defer cudaOptions.Destroy()
-		err = options.AppendExecutionProviderCUDA(cudaOptions)
-		if err != nil {
-			fmt.Println("Failed to append CUDA provider:", err)
-		} else {
-			fmt.Println("CUDA provider enabled!")
-		}
+	if disableCUDA := os.Getenv("SNEK2_ORT_DISABLE_CUDA"); disableCUDA != "" && disableCUDA != "0" && strings.ToLower(disableCUDA) != "false" {
+		fmt.Println("CUDA provider disabled via SNEK2_ORT_DISABLE_CUDA")
 	} else {
-		fmt.Println("Failed to create CUDA options:", err)
+		cudaOptions, err := ort.NewCUDAProviderOptions()
+		if err == nil {
+			defer cudaOptions.Destroy()
+			err = options.AppendExecutionProviderCUDA(cudaOptions)
+			if err != nil {
+				fmt.Println("Failed to append CUDA provider:", err)
+			} else {
+				fmt.Println("CUDA provider enabled!")
+			}
+		} else {
+			fmt.Println("Failed to create CUDA options:", err)
+		}
 	}
 
 	session, err := ort.NewDynamicAdvancedSession(modelPath, inputs, outputs, options)
@@ -166,6 +170,9 @@ func ensureLinuxLibraryPath() {
 		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "nvidia", "*", "lib"),
 		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "triton", "backends", "nvidia", "lib"),
 		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "torch", "lib"),
+		filepath.Join(string(filepath.Separator), "opt", "venv", "lib", "python*", "site-packages", "nvidia", "*", "lib"),
+		filepath.Join(string(filepath.Separator), "opt", "venv", "lib", "python*", "site-packages", "triton", "backends", "nvidia", "lib"),
+		filepath.Join(string(filepath.Separator), "opt", "venv", "lib", "python*", "site-packages", "torch", "lib"),
 	}
 	for _, pat := range patterns {
 		matches, _ := filepath.Glob(pat)

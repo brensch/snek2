@@ -507,7 +507,19 @@ def train():
             pass
 
     # Load Data
-    files = glob.glob(os.path.join(args.data_dir, "*.parquet"))
+    # Allow nested layout (e.g. data/generated/*.parquet and data/scraped/*.parquet)
+    # and avoid partially-written tmp shards.
+    files = glob.glob(os.path.join(args.data_dir, "**", "*.parquet"), recursive=True)
+    files = [
+        f
+        for f in files
+        if os.path.isfile(f)
+        and ("/tmp/" not in f.replace("\\", "/"))
+        and ("/generated/tmp/" not in f.replace("\\", "/"))
+        and ("/scraped/tmp/" not in f.replace("\\", "/"))
+        and ("/processed/" not in f.replace("\\", "/"))
+    ]
+    files.sort()
     if not files:
         print("No training data found.")
         return

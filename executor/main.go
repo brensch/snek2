@@ -23,6 +23,7 @@ import (
 
 var totalMoves atomic.Int64
 var totalInferences atomic.Int64
+var totalGames atomic.Int64
 
 type instrumentedClient struct {
 	mcts.Predictor
@@ -134,14 +135,17 @@ func main() {
 	outDir := flag.String("out-dir", "data/generated", "Output directory for generated training parquet batches")
 	workers := flag.Int("workers", 128, "Number of self-play workers")
 	gamesPerFlush := flag.Int("games-per-flush", 50, "Number of games to buffer per parquet flush")
+	maxGames := flag.Int64("max-games", 0, "If > 0, stop after generating this many games (across all workers)")
 	_ = runtime.NumCPU() // keep runtime import useful if you later tune defaults
 	onnxSessions := flag.Int("onnx-sessions", 1, "Number of ONNX Runtime sessions to run in parallel (each has its own batching loop). Start with 1; increase if GPU is underutilized.")
 	onnxBatchSize := flag.Int("onnx-batch-size", inference.DefaultBatchSize, "ONNX inference batch size (larger can improve GPU utilization)")
 	onnxBatchTimeout := flag.Duration("onnx-batch-timeout", inference.DefaultBatchTimeout, "Max time to wait for filling an ONNX batch")
 	flag.Parse()
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	ctx, cancel := context.WithCancel(sigCtx)
+	defer cancel()
 
 	// Redirect logs to file to avoid messing up TUI
 	// f, err := os.OpenFile("worker.log", os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666)
@@ -231,6 +235,12 @@ func main() {
 					totalMoves.Add(1)
 				}
 				examples, result := selfplay.PlayGame(ctx, workerId, mcts.Config{Cpuct: 1.0}, c, trace, onStep)
+				total := totalGames.Add(1)
+				log.Printf("finished game number %d", total)
+				if *maxGames > 0 && total >= *maxGames {
+					// Cancel the whole run after the target number of games.
+					cancel()
+				}
 
 				if len(examples) > 0 {
 					writeReqs <- gameWriteRequest{rows: examples}
@@ -265,7 +275,7 @@ func main() {
 			workerWG.Wait()
 			close(writeReqs)
 			<-writerDone
-			log.Printf("Shutdown complete: final parquet flush done")
+			log.Printf("Shutdown complete: final parquet flush done (games=%d)", totalGames.Load())
 			return
 		case update := <-updates:
 			log.Printf("Worker %d: Winner %s, Steps %d, Ex %d", update.WorkerID, update.Result.WinnerId, update.Result.Steps, update.Examples)
