@@ -22,8 +22,8 @@ type GameResult struct {
 }
 
 func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, onStep func()) ([]store.TrainingRow, GameResult) {
-	// rng := rand.New(rand.NewSource(time.Now().UnixNano())) // Unused
-	state := createInitialState()
+	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerId)*1000003))
+	state := createInitialState(rng)
 	gameID := fmt.Sprintf("selfplay_%d_%d", time.Now().UnixNano(), workerId)
 
 	rows := make([]store.TrainingRow, 0, 1024)
@@ -212,8 +212,8 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 			onStep()
 		}
 
-		// Advance State Simultaneously
-		state = rules.NextStateSimultaneous(state, moves)
+		// Advance State Simultaneously (with food spawning randomness)
+		state = rules.NextStateSimultaneousWithRNG(state, moves, rng)
 	}
 
 	// Determine Winner
@@ -247,8 +247,9 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 	return rows, GameResult{WinnerId: winnerId, Steps: int(state.Turn)}
 }
 
-func createInitialState() *game.GameState {
-	return &game.GameState{
+
+func createInitialState(rng *rand.Rand) *game.GameState {
+	state := &game.GameState{
 		Width:  11,
 		Height: 11,
 		YouId:  "snake1",
@@ -272,11 +273,14 @@ func createInitialState() *game.GameState {
 				},
 			},
 		},
-		Food: []game.Point{
-			{X: 5, Y: 5},
-		},
+		Food: nil,
 		Turn: 0,
 	}
+
+	// Spawn initial food like Battlesnake: enforce minimum food at game start.
+	// Use chance=0 so we only ensure the minimum.
+	rules.ApplyFoodSettings(state, rng, rules.FoodSettings{MinimumFood: 1, FoodSpawnChance: 0})
+	return state
 }
 
 func sampleMove(rng *rand.Rand, policy []float32) int {

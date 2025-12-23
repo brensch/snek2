@@ -2,7 +2,6 @@ package inference
 
 import (
 	"fmt"
-	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -32,7 +31,7 @@ type OnnxClientConfig struct {
 }
 
 type inferenceRequest struct {
-	input    []float32
+	inputPtr *[]float32
 	respChan chan inferenceResponse
 }
 
@@ -193,21 +192,11 @@ func (c *OnnxClient) Close() error {
 }
 
 func (c *OnnxClient) Predict(state *game.GameState) ([]float32, []float32, error) {
-	// Convert state to tensor data
-	byteDataPtr := convert.StateToBytes(state)
-	byteData := *byteDataPtr
-
-	// Convert bytes to float32 slice
-	floats := make([]float32, InputSize)
-	for i := 0; i < InputSize; i++ {
-		bits := uint32(byteData[i*4]) | uint32(byteData[i*4+1])<<8 | uint32(byteData[i*4+2])<<16 | uint32(byteData[i*4+3])<<24
-		floats[i] = math.Float32frombits(bits)
-	}
-	convert.PutBuffer(byteDataPtr)
+	floatsPtr := convert.StateToFloat32(state)
 
 	respChan := make(chan inferenceResponse, 1)
 	c.requestsChan <- inferenceRequest{
-		input:    floats,
+		inputPtr: floatsPtr,
 		respChan: respChan,
 	}
 
@@ -226,7 +215,10 @@ func (c *OnnxClient) batchLoop() {
 		select {
 		case req := <-c.requestsChan:
 			requests = append(requests, req)
-			batchInput = append(batchInput, req.input...)
+			if req.inputPtr != nil {
+				batchInput = append(batchInput, (*req.inputPtr)...)
+				convert.PutFloatBuffer(req.inputPtr)
+			}
 
 			if len(requests) >= c.cfg.BatchSize {
 				c.runBatch(requests, batchInput)

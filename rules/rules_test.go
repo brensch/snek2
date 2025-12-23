@@ -118,7 +118,7 @@ func TestNextState_NormalMove_NoFood(t *testing.T) {
 		Turn: 0,
 	}
 
-	after := NextState(before, MoveUp)
+	after := NextStateWithFoodSettings(before, MoveUp, nil, FoodSettings{MinimumFood: 0, FoodSpawnChance: 0})
 	logNextState(t, "NextState normal move", before, MoveUp, after)
 
 	got := after.Snakes[0].Body
@@ -152,7 +152,7 @@ func TestNextState_EatFood_GrowsByAppendingTail(t *testing.T) {
 		Turn: 0,
 	}
 
-	after := NextState(before, MoveUp)
+	after := NextStateWithFoodSettings(before, MoveUp, nil, FoodSettings{MinimumFood: 0, FoodSpawnChance: 0})
 	logNextState(t, "NextState eat food", before, MoveUp, after)
 
 	got := after.Snakes[0].Body
@@ -187,7 +187,7 @@ func TestNextState_StackedSpawn_EatFood(t *testing.T) {
 		Turn: 0,
 	}
 
-	after := NextState(before, MoveUp)
+	after := NextStateWithFoodSettings(before, MoveUp, nil, FoodSettings{MinimumFood: 0, FoodSpawnChance: 0})
 	logNextState(t, "NextState stacked spawn eat", before, MoveUp, after)
 
 	got := after.Snakes[0].Body
@@ -216,7 +216,7 @@ func TestNextStateSimultaneous_BothMove_OneEats(t *testing.T) {
 	}
 
 	moves := map[string]int{"a": MoveUp, "b": MoveLeft}
-	after := NextStateSimultaneous(before, moves)
+	after := NextStateSimultaneousWithFoodSettings(before, moves, nil, FoodSettings{MinimumFood: 0, FoodSpawnChance: 0})
 	logNextStateSimultaneous(t, "NextStateSimultaneous one eats", before, moves, after)
 
 	// Snake a ate: should grow by duplicating new tail.
@@ -262,5 +262,53 @@ func TestNextStateSimultaneous_BothMove_OneEats(t *testing.T) {
 
 	if len(after.Food) != 0 {
 		t.Fatalf("food len=%d want=0", len(after.Food))
+	}
+}
+
+func TestFood_MinimumFoodIsEnforced(t *testing.T) {
+	before := &game.GameState{
+		Width:  5,
+		Height: 5,
+		YouId:  "me",
+		Snakes: []game.Snake{{Id: "me", Health: 100, Body: []game.Point{{X: 2, Y: 2}, {X: 2, Y: 2}, {X: 2, Y: 2}}}},
+		Food:   nil,
+		Turn:   0,
+	}
+
+	// Use deterministic behavior by leaving rng=nil, but force minimum food.
+	after := NextStateWithFoodSettings(before, MoveUp, nil, FoodSettings{MinimumFood: 1, FoodSpawnChance: 0})
+	logNextState(t, "Food minimum enforced", before, MoveUp, after)
+
+	if len(after.Food) < 1 {
+		t.Fatalf("food len=%d want>=1", len(after.Food))
+	}
+	// Ensure food doesn't spawn on the snake.
+	occ := map[[2]int]bool{}
+	for _, p := range after.Snakes[0].Body {
+		occ[[2]int{int(p.X), int(p.Y)}] = true
+	}
+	for _, f := range after.Food {
+		if occ[[2]int{int(f.X), int(f.Y)}] {
+			t.Fatalf("food spawned on snake at (%d,%d)", f.X, f.Y)
+		}
+	}
+}
+
+func TestFood_SpawnChanceCanAddExtra(t *testing.T) {
+	before := &game.GameState{
+		Width:  5,
+		Height: 5,
+		YouId:  "me",
+		Snakes: []game.Snake{{Id: "me", Health: 100, Body: []game.Point{{X: 2, Y: 2}, {X: 2, Y: 2}, {X: 2, Y: 2}}}},
+		Food:   []game.Point{{X: 0, Y: 0}},
+		Turn:   0,
+	}
+
+	// Force spawn every turn via 100% chance.
+	after := NextStateWithFoodSettings(before, MoveUp, nil, FoodSettings{MinimumFood: 0, FoodSpawnChance: 100})
+	logNextState(t, "Food spawn chance", before, MoveUp, after)
+
+	if len(after.Food) != 2 {
+		t.Fatalf("food len=%d want=2", len(after.Food))
 	}
 }

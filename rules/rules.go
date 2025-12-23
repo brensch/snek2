@@ -1,6 +1,8 @@
 package rules
 
 import (
+	"math/rand"
+
 	"github.com/brensch/snek2/game"
 )
 
@@ -81,6 +83,14 @@ func isSafe(state *game.GameState, p game.Point, myBody []game.Point) bool {
 // Note: This currently only moves "You". Enemies are static.
 // This is used primarily for MCTS expansion where we might not know enemy moves.
 func NextState(state *game.GameState, move int) *game.GameState {
+	return NextStateWithFoodSettings(state, move, nil, DefaultFoodSettings)
+}
+
+func NextStateWithRNG(state *game.GameState, move int, rng *rand.Rand) *game.GameState {
+	return NextStateWithFoodSettings(state, move, rng, DefaultFoodSettings)
+}
+
+func NextStateWithFoodSettings(state *game.GameState, move int, rng *rand.Rand, food FoodSettings) *game.GameState {
 	newState := state.Clone()
 	newState.Turn++
 
@@ -143,11 +153,23 @@ func NextState(state *game.GameState, move int) *game.GameState {
 	}
 	you.Body = newBody
 
+	// Food spawning (Battlesnake-style): enforce minimum food and optionally spawn extra.
+	// Use deterministic RNG if nil.
+	applyFoodRules(newState, rng, food, uint64(move))
+
 	return newState
 }
 
 // NextStateSimultaneous advances the game state with moves for all snakes.
 func NextStateSimultaneous(state *game.GameState, moves map[string]int) *game.GameState {
+	return NextStateSimultaneousWithFoodSettings(state, moves, nil, DefaultFoodSettings)
+}
+
+func NextStateSimultaneousWithRNG(state *game.GameState, moves map[string]int, rng *rand.Rand) *game.GameState {
+	return NextStateSimultaneousWithFoodSettings(state, moves, rng, DefaultFoodSettings)
+}
+
+func NextStateSimultaneousWithFoodSettings(state *game.GameState, moves map[string]int, rng *rand.Rand, food FoodSettings) *game.GameState {
 	newState := state.Clone()
 	newState.Turn++
 
@@ -311,6 +333,10 @@ func NextStateSimultaneous(state *game.GameState, moves map[string]int) *game.Ga
 		finalSnakes = append(finalSnakes, s)
 	}
 	newState.Snakes = finalSnakes
+
+	// Food spawning (Battlesnake-style): enforce minimum food and optionally spawn extra.
+	// Apply after deaths so we don't spawn under removed snakes.
+	applyFoodRules(newState, rng, food, 0x51504C595F53494D) // "QPLY_SIM" salt
 
 	return newState
 }
