@@ -258,8 +258,8 @@ func createInitialState() *game.GameState {
 				Health: 100,
 				Body: []game.Point{
 					{X: 1, Y: 1},
-					{X: 1, Y: 2},
-					{X: 1, Y: 3},
+					{X: 1, Y: 1},
+					{X: 1, Y: 1},
 				},
 			},
 			{
@@ -267,8 +267,8 @@ func createInitialState() *game.GameState {
 				Health: 100,
 				Body: []game.Point{
 					{X: 9, Y: 9},
-					{X: 9, Y: 8},
-					{X: 9, Y: 7},
+					{X: 9, Y: 9},
+					{X: 9, Y: 9},
 				},
 			},
 		},

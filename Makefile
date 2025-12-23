@@ -1,4 +1,4 @@
-.PHONY: all install-deps init
+.PHONY: all install-deps init generate
 
 export PATH := $(HOME)/go/bin:$(PATH)
 
@@ -40,11 +40,10 @@ train: $(VENV_DIR)
 export-onnx: $(VENV_DIR)
 	$(PYTHON) trainer/export_onnx.py
 
-run:
-	@echo "Starting Snek2 in tmux..."
-	tmux new-session -d -s snek '$(MAKE) run-py'
-	tmux split-window -h -t snek '$(MAKE) run-go'
-	tmux attach -t snek
+generate:
+	@mkdir -p data/generated
+	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
+	go run ./executor -out-dir data/generated
 
 # Scraper targets
 scrape:

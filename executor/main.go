@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -129,6 +130,11 @@ func (m model) View() string {
 }
 
 func main() {
+	outDir := flag.String("out-dir", "data/generated", "Output directory for generated training parquet batches")
+	workers := flag.Int("workers", 128, "Number of self-play workers")
+	gamesPerFlush := flag.Int("games-per-flush", 50, "Number of games to buffer per parquet flush")
+	flag.Parse()
+
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -160,21 +166,20 @@ func main() {
 	// We use Parallel Games.
 	// Each worker runs sequential MCTS with local inference.
 	// 16 workers for 16 threads.
-	workers := 128
-	log.Printf("Starting Self-Play with %d workers", workers)
+	log.Printf("Starting Self-Play with %d workers", *workers)
 
-	updates := make(chan GameUpdate, workers)
-	writeReqs := make(chan gameWriteRequest, workers*4)
+	updates := make(chan GameUpdate, *workers)
+	writeReqs := make(chan gameWriteRequest, (*workers)*4)
 
 	writerDone := make(chan struct{})
 	go func() {
-		parquetWriterLoop("data", 50, writeReqs)
+		parquetWriterLoop(*outDir, *gamesPerFlush, writeReqs)
 		close(writerDone)
 	}()
 
 	var workerWG sync.WaitGroup
 
-	for i := 0; i < workers; i++ {
+	for i := 0; i < *workers; i++ {
 		workerWG.Add(1)
 		go func(workerId int) {
 			defer workerWG.Done()
