@@ -6,6 +6,7 @@ import (
 	"log"
 	"math/rand"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -52,6 +53,16 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 
 		policies := make(map[string][]float32)
 		var policiesMu sync.Mutex
+
+		type mctsStats struct {
+			ChosenMove  int
+			TotalVisits int
+			Visits      [4]int
+			Q           [4]float32
+			Prior       [4]float32
+		}
+		statsBySnake := make(map[string]mctsStats)
+		var statsMu sync.Mutex
 
 		var wg sync.WaitGroup
 
@@ -100,6 +111,9 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 				// Extract Policy
 				policy := make([]float32, 4)
 				totalVisits := 0
+				var visits [4]int
+				var qs [4]float32
+				var priors [4]float32
 				for _, child := range root.Children {
 					if child != nil {
 						totalVisits += child.VisitCount
@@ -116,7 +130,13 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 
 				for move, child := range root.Children {
 					if child != nil && int(move) < len(policy) {
-						policy[int(move)] = float32(child.VisitCount) / float32(totalVisits)
+						idx := int(move)
+						visits[idx] = child.VisitCount
+						priors[idx] = child.PriorProb
+						if child.VisitCount > 0 {
+							qs[idx] = child.ValueSum / float32(child.VisitCount)
+						}
+						policy[idx] = float32(child.VisitCount) / float32(totalVisits)
 					}
 				}
 
@@ -140,6 +160,16 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 				policiesMu.Lock()
 				policies[id] = policy
 				policiesMu.Unlock()
+
+				statsMu.Lock()
+				statsBySnake[id] = mctsStats{
+					ChosenMove:  move,
+					TotalVisits: totalVisits,
+					Visits:      visits,
+					Q:           qs,
+					Prior:       priors,
+				}
+				statsMu.Unlock()
 
 				if verbose {
 					// Per-snake verbose logging is handled after all moves are chosen.
@@ -169,7 +199,57 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 				if m >= 0 && m < len(moveNames) {
 					moveName = moveNames[m]
 				}
-				log.Printf("[Worker %d] Turn %d: %s -> %s", workerId, state.Turn, id, moveName)
+				statsMu.Lock()
+				st, ok := statsBySnake[id]
+				statsMu.Unlock()
+				if ok {
+					bestIdx := 0
+					bestN := -1
+					for i := 0; i < 4; i++ {
+						if st.Visits[i] > bestN {
+							bestN = st.Visits[i]
+							bestIdx = i
+						}
+					}
+
+					chosenN := 0
+					chosenQ := float32(0)
+					chosenP := float32(0)
+					if m >= 0 && m < 4 {
+						chosenN = st.Visits[m]
+						chosenQ = st.Q[m]
+						chosenP = st.Prior[m]
+					}
+
+					// Human-readable per-move breakdown.
+					per := make([]string, 0, 4)
+					for i := 0; i < 4; i++ {
+						pct := float32(0)
+						if st.TotalVisits > 0 {
+							pct = float32(st.Visits[i]) / float32(st.TotalVisits) * 100
+						}
+						mark := ""
+						if i == bestIdx {
+							mark = "*" // most visited
+						}
+						per = append(per, fmt.Sprintf("%s%s: N=%d (%.1f%%) Q=%.3f P=%.3f", mark, moveNames[i], st.Visits[i], pct, st.Q[i], st.Prior[i]))
+					}
+
+					log.Printf(
+						"[Worker %d] Turn %d: %s -> %s | chosen N=%d/%d Q=%.3f P=%.3f | %s",
+						workerId,
+						state.Turn,
+						id,
+						moveName,
+						chosenN,
+						st.TotalVisits,
+						chosenQ,
+						chosenP,
+						strings.Join(per, " | "),
+					)
+				} else {
+					log.Printf("[Worker %d] Turn %d: %s -> %s", workerId, state.Turn, id, moveName)
+				}
 			}
 		}
 
