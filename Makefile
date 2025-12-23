@@ -6,6 +6,14 @@ VENV_DIR = .venv
 PYTHON = $(VENV_DIR)/bin/python
 PIP = $(VENV_DIR)/bin/pip
 
+# Executor tuning (override like: make generate ONNX_BATCH_SIZE=256)
+OUT_DIR ?= data/generated
+WORKERS ?= 128
+GAMES_PER_FLUSH ?= 50
+ONNX_SESSIONS ?= 1
+ONNX_BATCH_SIZE ?= 512
+ONNX_BATCH_TIMEOUT ?= 2ms
+
 all:
 
 init:
@@ -41,9 +49,15 @@ export-onnx: $(VENV_DIR)
 	$(PYTHON) trainer/export_onnx.py
 
 generate:
-	@mkdir -p data/generated
+	@mkdir -p $(OUT_DIR)
 	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
-	go run ./executor -out-dir data/generated
+	go run ./executor \
+		-out-dir $(OUT_DIR) \
+		-workers $(WORKERS) \
+		-games-per-flush $(GAMES_PER_FLUSH) \
+		-onnx-sessions $(ONNX_SESSIONS) \
+		-onnx-batch-size $(ONNX_BATCH_SIZE) \
+		-onnx-batch-timeout $(ONNX_BATCH_TIMEOUT)
 
 # Scraper targets
 scrape:

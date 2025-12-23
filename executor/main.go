@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -133,6 +134,10 @@ func main() {
 	outDir := flag.String("out-dir", "data/generated", "Output directory for generated training parquet batches")
 	workers := flag.Int("workers", 128, "Number of self-play workers")
 	gamesPerFlush := flag.Int("games-per-flush", 50, "Number of games to buffer per parquet flush")
+	_ = runtime.NumCPU() // keep runtime import useful if you later tune defaults
+	onnxSessions := flag.Int("onnx-sessions", 1, "Number of ONNX Runtime sessions to run in parallel (each has its own batching loop). Start with 1; increase if GPU is underutilized.")
+	onnxBatchSize := flag.Int("onnx-batch-size", inference.DefaultBatchSize, "ONNX inference batch size (larger can improve GPU utilization)")
+	onnxBatchTimeout := flag.Duration("onnx-batch-timeout", inference.DefaultBatchTimeout, "Max time to wait for filling an ONNX batch")
 	flag.Parse()
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -152,14 +157,32 @@ func main() {
 		log.Fatalf("Model file not found: %s. Run trainer/export_onnx.py first.", modelPath)
 	}
 
-	onnxClient, err := inference.NewOnnxClient(modelPath)
-	if err != nil {
-		log.Fatalf("Failed to create ONNX client: %v", err)
+	var predictor mcts.Predictor
+	var closer interface{ Close() error }
+	onnxCfg := inference.OnnxClientConfig{BatchSize: *onnxBatchSize, BatchTimeout: *onnxBatchTimeout}
+	if *onnxSessions <= 1 {
+		onnxClient, err := inference.NewOnnxClientWithConfig(modelPath, onnxCfg)
+		if err != nil {
+			log.Fatalf("Failed to create ONNX client: %v", err)
+		}
+		predictor = onnxClient
+		closer = onnxClient
+	} else {
+		pool, err := inference.NewOnnxClientPoolWithConfig(modelPath, *onnxSessions, onnxCfg)
+		if err != nil {
+			log.Fatalf("Failed to create ONNX client pool: %v", err)
+		}
+		predictor = pool
+		closer = pool
 	}
-	defer onnxClient.Close()
+	defer func() {
+		if closer != nil {
+			_ = closer.Close()
+		}
+	}()
 
 	// Wrap with instrumentation
-	var c mcts.Predictor = &instrumentedClient{Predictor: onnxClient}
+	var c mcts.Predictor = &instrumentedClient{Predictor: predictor}
 
 	fmt.Println("ONNX Client initialized! Starting workers...")
 
@@ -283,4 +306,18 @@ func parquetWriterLoop(outDir string, gamesPerFlush int, in <-chan gameWriteRequ
 		}
 		log.Printf("Parquet final flush ok: %s (games=%d rows=%d)", outPath, pendingGames, len(pendingRows))
 	}
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }

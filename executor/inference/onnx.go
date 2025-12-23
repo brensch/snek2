@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/brensch/snek2/executor/convert"
@@ -15,12 +16,20 @@ import (
 )
 
 const (
-	BatchSize    = 128
-	BatchTimeout = 1 * time.Millisecond
-	InputSize    = 14 * 11 * 11
-	PolicySize   = 4
-	ValueSize    = 1
+	InputSize  = 14 * 11 * 11
+	PolicySize = 4
+	ValueSize  = 1
 )
+
+const (
+	DefaultBatchSize    = 128
+	DefaultBatchTimeout = 1 * time.Millisecond
+)
+
+type OnnxClientConfig struct {
+	BatchSize    int
+	BatchTimeout time.Duration
+}
 
 type inferenceRequest struct {
 	input    []float32
@@ -37,9 +46,24 @@ type inferenceResponse struct {
 type OnnxClient struct {
 	session      *ort.DynamicAdvancedSession
 	requestsChan chan inferenceRequest
+	cfg          OnnxClientConfig
 }
 
+var ortInitOnce sync.Once
+var ortInitErr error
+
 func NewOnnxClient(modelPath string) (*OnnxClient, error) {
+	return NewOnnxClientWithConfig(modelPath, OnnxClientConfig{BatchSize: DefaultBatchSize, BatchTimeout: DefaultBatchTimeout})
+}
+
+func NewOnnxClientWithConfig(modelPath string, cfg OnnxClientConfig) (*OnnxClient, error) {
+	if cfg.BatchSize <= 0 {
+		cfg.BatchSize = DefaultBatchSize
+	}
+	if cfg.BatchTimeout <= 0 {
+		cfg.BatchTimeout = DefaultBatchTimeout
+	}
+
 	if runtime.GOOS == "linux" {
 		ensureLinuxLibraryPath()
 		if p := os.Getenv("ORT_SHARED_LIBRARY_PATH"); p != "" {
@@ -61,9 +85,11 @@ func NewOnnxClient(modelPath string) (*OnnxClient, error) {
 		}
 	}
 
-	err := ort.InitializeEnvironment()
-	if err != nil {
-		return nil, fmt.Errorf("failed to init ort: %w", err)
+	ortInitOnce.Do(func() {
+		ortInitErr = ort.InitializeEnvironment()
+	})
+	if ortInitErr != nil {
+		return nil, fmt.Errorf("failed to init ort: %w", ortInitErr)
 	}
 
 	options, err := ort.NewSessionOptions()
@@ -101,7 +127,8 @@ func NewOnnxClient(modelPath string) (*OnnxClient, error) {
 
 	client := &OnnxClient{
 		session:      session,
-		requestsChan: make(chan inferenceRequest, BatchSize*2),
+		cfg:          cfg,
+		requestsChan: make(chan inferenceRequest, cfg.BatchSize*2),
 	}
 
 	go client.batchLoop()
@@ -117,15 +144,19 @@ func ensureLinuxLibraryPath() {
 
 	// These are the common locations of CUDA + Torch shared libraries when installed
 	// via pip packages inside the project's .venv.
-	candidateDirs := []string{
-		cwd,
-		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cublas", "lib"),
-		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cudnn", "lib"),
-		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cuda_runtime", "lib"),
-		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cusolver", "lib"),
-		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "nvidia", "cusparse", "lib"),
-		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "triton", "backends", "nvidia", "lib"),
-		filepath.Join(cwd, ".venv", "lib", "python3.12", "site-packages", "torch", "lib"),
+	// Don't hardcode python version; glob python*/site-packages.
+	candidateDirs := []string{cwd}
+
+	patterns := []string{
+		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "nvidia", "*", "lib"),
+		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "triton", "backends", "nvidia", "lib"),
+		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "torch", "lib"),
+	}
+	for _, pat := range patterns {
+		matches, _ := filepath.Glob(pat)
+		for _, m := range matches {
+			candidateDirs = append(candidateDirs, m)
+		}
 	}
 
 	existing := os.Getenv("LD_LIBRARY_PATH")
@@ -185,10 +216,10 @@ func (c *OnnxClient) Predict(state *game.GameState) ([]float32, []float32, error
 }
 
 func (c *OnnxClient) batchLoop() {
-	batchInput := make([]float32, 0, BatchSize*InputSize)
-	requests := make([]inferenceRequest, 0, BatchSize)
+	batchInput := make([]float32, 0, c.cfg.BatchSize*InputSize)
+	requests := make([]inferenceRequest, 0, c.cfg.BatchSize)
 
-	ticker := time.NewTicker(BatchTimeout)
+	ticker := time.NewTicker(c.cfg.BatchTimeout)
 	defer ticker.Stop()
 
 	for {
@@ -197,7 +228,7 @@ func (c *OnnxClient) batchLoop() {
 			requests = append(requests, req)
 			batchInput = append(batchInput, req.input...)
 
-			if len(requests) >= BatchSize {
+			if len(requests) >= c.cfg.BatchSize {
 				c.runBatch(requests, batchInput)
 				// Reset
 				requests = requests[:0]
