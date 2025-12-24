@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/brensch/snek2/executor/convert"
 	"github.com/brensch/snek2/executor/mcts"
 	"github.com/brensch/snek2/game"
 	"github.com/brensch/snek2/rules"
@@ -22,12 +21,12 @@ type GameResult struct {
 	Steps    int
 }
 
-func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, sims int, onStep func()) ([]store.TrainingRow, GameResult) {
+func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, sims int, onStep func()) ([]store.ArchiveTurnRow, GameResult) {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerId)*1000003))
 	state := createInitialState(rng)
 	gameID := fmt.Sprintf("selfplay_%d_%d", time.Now().UnixNano(), workerId)
 
-	rows := make([]store.TrainingRow, 0, 1024)
+	rows := make([]store.ArchiveTurnRow, 0, 256)
 
 	moveNames := []string{"Up", "Down", "Left", "Right"}
 
@@ -257,40 +256,62 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 			}
 		}
 
-		// Record per-snake supervised samples for this turn (ego-centric).
+		// Record one archive row for this turn (contains all snakes).
 		sortedSnakes := make([]game.Snake, len(state.Snakes))
 		copy(sortedSnakes, state.Snakes)
 		sort.Slice(sortedSnakes, func(i, j int) bool {
 			return sortedSnakes[i].Id < sortedSnakes[j].Id
 		})
 
-		for _, s := range sortedSnakes {
-			if s.Health <= 0 {
-				continue
-			}
-			move, ok := moves[s.Id]
-			if !ok {
-				continue
-			}
-			localState := state.Clone()
-			localState.YouId = s.Id
-
-			xPtr := convert.StateToBytes(localState)
-			x := make([]byte, len(*xPtr))
-			copy(x, *xPtr)
-			convert.PutBuffer(xPtr)
-
-			rows = append(rows, store.TrainingRow{
-				GameID: gameID,
-				Turn:   state.Turn,
-				EgoID:  s.Id,
-				Width:  state.Width,
-				Height: state.Height,
-				X:      x,
-				Policy: int32(move),
-				Value:  0,
-			})
+		turnRow := store.ArchiveTurnRow{
+			GameID:  gameID,
+			Turn:    state.Turn,
+			Width:   state.Width,
+			Height:  state.Height,
+			Source:  "selfplay",
+			FoodX:   nil,
+			FoodY:   nil,
+			HazardX: nil,
+			HazardY: nil,
+			Snakes:  nil,
 		}
+		if len(state.Food) > 0 {
+			turnRow.FoodX = make([]int32, 0, len(state.Food))
+			turnRow.FoodY = make([]int32, 0, len(state.Food))
+			for _, p := range state.Food {
+				turnRow.FoodX = append(turnRow.FoodX, p.X)
+				turnRow.FoodY = append(turnRow.FoodY, p.Y)
+			}
+		}
+
+		turnRow.Snakes = make([]store.ArchiveSnake, 0, len(sortedSnakes))
+		for _, s := range sortedSnakes {
+			alive := s.Health > 0 && len(s.Body) > 0
+			policy := int32(-1)
+			if alive {
+				if move, ok := moves[s.Id]; ok {
+					policy = int32(move)
+				}
+			}
+			snakeRow := store.ArchiveSnake{
+				ID:     s.Id,
+				Alive:  alive,
+				Health: s.Health,
+				Policy: policy,
+				Value:  0,
+			}
+			if len(s.Body) > 0 {
+				snakeRow.BodyX = make([]int32, 0, len(s.Body))
+				snakeRow.BodyY = make([]int32, 0, len(s.Body))
+				for _, bp := range s.Body {
+					snakeRow.BodyX = append(snakeRow.BodyX, bp.X)
+					snakeRow.BodyY = append(snakeRow.BodyY, bp.Y)
+				}
+			}
+			turnRow.Snakes = append(turnRow.Snakes, snakeRow)
+		}
+
+		rows = append(rows, turnRow)
 
 		if onStep != nil {
 			onStep()
@@ -314,16 +335,16 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 	}
 
 	// Assign values after outcome is known.
-	if winnerId == "" {
-		for i := range rows {
-			rows[i].Value = 0
-		}
-	} else {
-		for i := range rows {
-			if rows[i].EgoID == winnerId {
-				rows[i].Value = 1
+	for i := range rows {
+		for j := range rows[i].Snakes {
+			if winnerId == "" {
+				rows[i].Snakes[j].Value = 0
+				continue
+			}
+			if rows[i].Snakes[j].ID == winnerId {
+				rows[i].Snakes[j].Value = 1
 			} else {
-				rows[i].Value = -1
+				rows[i].Snakes[j].Value = -1
 			}
 		}
 	}

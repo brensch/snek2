@@ -10,6 +10,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset, TensorDataset
 
 from constants import HEIGHT, IN_CHANNELS, WIDTH
+from featurize import featurize_state_json
 
 EXPECTED_X_BYTES = IN_CHANNELS * WIDTH * HEIGHT * 4
 
@@ -34,21 +35,28 @@ def list_parquet_files(data_dir: str, *, max_files: int = 0) -> list[str]:
     return [str(p) for p in files]
 
 
-def _decode_states(x_col: pl.Series) -> tuple[np.ndarray, np.ndarray]:
+def _decode_states(
+    x_col: pl.Series,
+    *,
+    c: int,
+    h: int,
+    w: int,
+) -> tuple[np.ndarray, np.ndarray]:
     """Decode the `x` column into a float32 array and validity mask."""
     x_list = x_col.to_list()
     n = len(x_list)
 
-    states = np.empty((n, IN_CHANNELS, HEIGHT, WIDTH), dtype=np.float32)
+    expected_bytes = int(c) * int(h) * int(w) * 4
+    states = np.empty((n, int(c), int(h), int(w)), dtype=np.float32)
     valid = np.ones(n, dtype=bool)
 
     for i, x in enumerate(x_list):
         if isinstance(x, memoryview):
             x = x.tobytes()
-        if not isinstance(x, (bytes, bytearray)) or len(x) != EXPECTED_X_BYTES:
+        if not isinstance(x, (bytes, bytearray)) or len(x) != expected_bytes:
             valid[i] = False
             continue
-        states[i] = np.frombuffer(x, dtype=np.float32).reshape(IN_CHANNELS, HEIGHT, WIDTH)
+        states[i] = np.frombuffer(x, dtype=np.float32).reshape(int(c), int(h), int(w))
 
     if valid.all():
         return states, valid
@@ -56,25 +64,72 @@ def _decode_states(x_col: pl.Series) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _read_parquet_examples(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    df = pl.read_parquet(path, columns=["x", "policy", "value"])
+    # Preferred format: raw state JSON.
+    try:
+        df = pl.read_parquet(path, columns=["state", "policy", "value"])
+        state_list = df.get_column("state").to_list()
+        policies = df.get_column("policy").to_numpy().astype(np.int64, copy=False)
+        values = df.get_column("value").to_numpy().astype(np.float32, copy=False)
 
-    states, valid_mask = _decode_states(df.get_column("x"))
-    if states.shape[0] == 0:
+        xs: list[np.ndarray] = []
+        ps: list[np.int64] = []
+        vs: list[np.float32] = []
+        n_rows = min(len(state_list), int(policies.shape[0]), int(values.shape[0]))
+        for i in range(n_rows):
+            sb = state_list[i]
+            if isinstance(sb, memoryview):
+                sb = sb.tobytes()
+            if not isinstance(sb, (bytes, bytearray)):
+                continue
+            try:
+                x = featurize_state_json(bytes(sb))
+            except (ValueError, TypeError):
+                # Bad JSON / unexpected types.
+                continue
+            if x is None:
+                continue
+            xs.append(x)
+            ps.append(policies[i])
+            vs.append(values[i])
+
+        if not xs:
+            return (
+                np.empty((0, IN_CHANNELS, HEIGHT, WIDTH), dtype=np.float32),
+                np.empty((0,), dtype=np.int64),
+                np.empty((0,), dtype=np.float32),
+            )
         return (
-            np.empty((0, IN_CHANNELS, HEIGHT, WIDTH), dtype=np.float32),
-            np.empty((0,), dtype=np.int64),
-            np.empty((0,), dtype=np.float32),
+            np.stack(xs, axis=0),
+            np.asarray(ps, dtype=np.int64),
+            np.asarray(vs, dtype=np.float32),
         )
+    except (OSError, ValueError, pl.exceptions.PolarsError):
+        # Legacy format: x tensor bytes (optionally with x_c/x_h/x_w).
+        try:
+            df = pl.read_parquet(path, columns=["x", "policy", "value", "x_c", "x_h", "x_w"])
+            c = int(df.get_column("x_c")[0]) if df.height > 0 else IN_CHANNELS
+            h = int(df.get_column("x_h")[0]) if df.height > 0 else HEIGHT
+            w = int(df.get_column("x_w")[0]) if df.height > 0 else WIDTH
+        except (OSError, ValueError, pl.exceptions.PolarsError):
+            df = pl.read_parquet(path, columns=["x", "policy", "value"])
+            c, h, w = IN_CHANNELS, HEIGHT, WIDTH
 
-    policies = df.get_column("policy").to_numpy()
-    values = df.get_column("value").to_numpy()
+        states, valid_mask = _decode_states(df.get_column("x"), c=c, h=h, w=w)
+        if states.shape[0] == 0:
+            return (
+                np.empty((0, int(c), int(h), int(w)), dtype=np.float32),
+                np.empty((0,), dtype=np.int64),
+                np.empty((0,), dtype=np.float32),
+            )
 
-    # Keep rows aligned with decoded states; if x was invalid, drop that row.
-    policies = policies[valid_mask].astype(np.int64, copy=False)
-    values = values[valid_mask].astype(np.float32, copy=False)
+        policies = df.get_column("policy").to_numpy()
+        values = df.get_column("value").to_numpy()
 
-    n = min(states.shape[0], policies.shape[0], values.shape[0])
-    return states[:n], policies[:n], values[:n]
+        policies = policies[valid_mask].astype(np.int64, copy=False)
+        values = values[valid_mask].astype(np.float32, copy=False)
+
+        n = min(states.shape[0], policies.shape[0], values.shape[0])
+        return states[:n], policies[:n], values[:n]
 
 
 class StreamingParquetDataset(torch.utils.data.IterableDataset):

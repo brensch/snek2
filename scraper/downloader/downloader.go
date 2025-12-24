@@ -175,10 +175,10 @@ readLoop:
 	return frames, nil
 }
 
-func BuildTrainingRows(gameID string, frames []FrameData) []store.TrainingRow {
+func BuildArchiveTurns(gameID string, frames []FrameData) []store.ArchiveTurnRow {
 	outcomes := determineOutcomes(frames)
 
-	var rows []store.TrainingRow
+	var rows []store.ArchiveTurnRow
 
 	for i := 0; i < len(frames)-1; i++ {
 		cur := &frames[i]
@@ -202,50 +202,97 @@ func BuildTrainingRows(gameID string, frames []FrameData) []store.TrainingRow {
 			height = int32(cur.Board.Height)
 		}
 
+		turnRow := store.ArchiveTurnRow{
+			GameID:  gameID,
+			Turn:    int32(cur.Turn),
+			Width:   width,
+			Height:  height,
+			Source:  "scrape",
+			FoodX:   nil,
+			FoodY:   nil,
+			HazardX: nil,
+			HazardY: nil,
+			Snakes:  nil,
+		}
+
+		if len(cur.Food) > 0 {
+			turnRow.FoodX = make([]int32, 0, len(cur.Food))
+			turnRow.FoodY = make([]int32, 0, len(cur.Food))
+			for _, f := range cur.Food {
+				turnRow.FoodX = append(turnRow.FoodX, int32(f.X))
+				turnRow.FoodY = append(turnRow.FoodY, int32(f.Y))
+			}
+		}
+
+		// Hazards may appear in both locations depending on feed.
+		hzs := 0
+		if len(cur.Hazards) > 0 {
+			hzs += len(cur.Hazards)
+		}
+		if len(cur.Board.Hazards) > 0 {
+			hzs += len(cur.Board.Hazards)
+		}
+		if hzs > 0 {
+			turnRow.HazardX = make([]int32, 0, hzs)
+			turnRow.HazardY = make([]int32, 0, hzs)
+			for _, h := range cur.Hazards {
+				turnRow.HazardX = append(turnRow.HazardX, int32(h.X))
+				turnRow.HazardY = append(turnRow.HazardY, int32(h.Y))
+			}
+			for _, h := range cur.Board.Hazards {
+				turnRow.HazardX = append(turnRow.HazardX, int32(h.X))
+				turnRow.HazardY = append(turnRow.HazardY, int32(h.Y))
+			}
+		}
+
+		turnRow.Snakes = make([]store.ArchiveSnake, 0, len(cur.Snakes))
 		for _, s := range cur.Snakes {
-			if s.Death != nil || s.Health <= 0 || len(s.Body) == 0 {
-				continue
-			}
-			nh, ok := nextHead[s.ID]
-			if !ok {
-				continue
-			}
-			ch := s.Body[0]
-			dx := nh.X - ch.X
-			dy := nh.Y - ch.Y
+			alive := s.Death == nil && s.Health > 0 && len(s.Body) > 0
 
-			move := -1
-			switch {
-			case dy == 1 && dx == 0:
-				move = 0 // Up
-			case dy == -1 && dx == 0:
-				move = 1 // Down
-			case dx == -1 && dy == 0:
-				move = 2 // Left
-			case dx == 1 && dy == 0:
-				move = 3 // Right
-			}
-			if move < 0 {
-				continue
+			policy := int32(-1)
+			if alive {
+				nh, ok := nextHead[s.ID]
+				if ok {
+					ch := s.Body[0]
+					dx := nh.X - ch.X
+					dy := nh.Y - ch.Y
+					switch {
+					case dy == 1 && dx == 0:
+						policy = 0 // Up
+					case dy == -1 && dx == 0:
+						policy = 1 // Down
+					case dx == -1 && dy == 0:
+						policy = 2 // Left
+					case dx == 1 && dy == 0:
+						policy = 3 // Right
+					}
+				}
 			}
 
-			x := EgoStateToBytes(cur, s.ID)
 			value := float32(0)
 			if v, ok := outcomes[s.ID]; ok {
 				value = v
 			}
 
-			rows = append(rows, store.TrainingRow{
-				GameID: gameID,
-				Turn:   int32(cur.Turn),
-				EgoID:  s.ID,
-				Width:  width,
-				Height: height,
-				X:      x,
-				Policy: int32(move),
+			snakeRow := store.ArchiveSnake{
+				ID:     s.ID,
+				Alive:  alive,
+				Health: int32(s.Health),
+				Policy: policy,
 				Value:  value,
-			})
+			}
+			if len(s.Body) > 0 {
+				snakeRow.BodyX = make([]int32, 0, len(s.Body))
+				snakeRow.BodyY = make([]int32, 0, len(s.Body))
+				for _, bp := range s.Body {
+					snakeRow.BodyX = append(snakeRow.BodyX, int32(bp.X))
+					snakeRow.BodyY = append(snakeRow.BodyY, int32(bp.Y))
+				}
+			}
+			turnRow.Snakes = append(turnRow.Snakes, snakeRow)
 		}
+
+		rows = append(rows, turnRow)
 	}
 
 	return rows

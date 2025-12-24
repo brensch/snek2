@@ -134,7 +134,7 @@ func runLoop(written *store.WrittenLog, outDir string, requestDelay time.Duratio
 	flushTicker := time.NewTicker(flushEvery)
 	defer flushTicker.Stop()
 
-	batchWriter, err := store.NewBatchWriter(outDir)
+	batchWriter, err := store.NewArchiveBatchWriter(outDir)
 	if err != nil {
 		slog.Error("failed to create batch writer", "error", err)
 		os.Exit(1)
@@ -170,7 +170,7 @@ func runLoop(written *store.WrittenLog, outDir string, requestDelay time.Duratio
 		if outPath == "" {
 			// Nothing written; open a new tmp file.
 			if reason != "signal" && reason != "final" {
-				bw, err := store.NewBatchWriter(outDir)
+				bw, err := store.NewArchiveBatchWriter(outDir)
 				if err != nil {
 					slog.Error("failed to create batch writer", "error", err)
 					os.Exit(1)
@@ -199,7 +199,7 @@ func runLoop(written *store.WrittenLog, outDir string, requestDelay time.Duratio
 		)
 
 		if reason != "signal" && reason != "final" {
-			bw, err := store.NewBatchWriter(outDir)
+			bw, err := store.NewArchiveBatchWriter(outDir)
 			if err != nil {
 				slog.Error("failed to create batch writer", "error", err)
 				os.Exit(1)
@@ -267,7 +267,7 @@ mainLoop:
 				continue
 			}
 
-			rows := downloader.BuildTrainingRows(gameID, frames)
+			rows := downloader.BuildArchiveTurns(gameID, frames)
 			if len(rows) == 0 {
 				gamesFailed++
 				if gamesFailed%50 == 1 {

@@ -42,7 +42,7 @@ type GameUpdate struct {
 }
 
 type gameWriteRequest struct {
-	rows []store.TrainingRow
+	rows []store.ArchiveTurnRow
 }
 
 type model struct {
@@ -365,7 +365,7 @@ func parquetWriterLoop(outDir string, gamesPerFlush int, in <-chan gameWriteRequ
 		gamesPerFlush = 50
 	}
 
-	pendingRows := make([]store.TrainingRow, 0, 1024*gamesPerFlush)
+	pendingRows := make([]store.ArchiveTurnRow, 0, 256*gamesPerFlush)
 	pendingGames := 0
 
 	for req := range in {
@@ -379,7 +379,7 @@ func parquetWriterLoop(outDir string, gamesPerFlush int, in <-chan gameWriteRequ
 			continue
 		}
 
-		outPath, err := store.WriteBatchParquetAtomic(outDir, pendingRows)
+		outPath, err := store.WriteArchiveBatchParquetAtomic(outDir, pendingRows)
 		if err != nil {
 			log.Printf("Parquet flush failed (games=%d rows=%d): %v", pendingGames, len(pendingRows), err)
 		} else {
@@ -391,7 +391,7 @@ func parquetWriterLoop(outDir string, gamesPerFlush int, in <-chan gameWriteRequ
 	}
 
 	if pendingGames > 0 && len(pendingRows) > 0 {
-		outPath, err := store.WriteBatchParquetAtomic(outDir, pendingRows)
+		outPath, err := store.WriteArchiveBatchParquetAtomic(outDir, pendingRows)
 		if err != nil {
 			log.Printf("Parquet final flush failed (games=%d rows=%d): %v", pendingGames, len(pendingRows), err)
 			return
