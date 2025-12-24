@@ -23,7 +23,7 @@ const (
 
 const (
 	DefaultBatchSize    = 512
-	DefaultBatchTimeout = 1 * time.Millisecond
+	DefaultBatchTimeout = 5 * time.Millisecond
 )
 
 type OnnxClientConfig struct {

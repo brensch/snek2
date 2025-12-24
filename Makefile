@@ -17,7 +17,7 @@ ONNX_BATCH_SIZE ?= 512
 ONNX_BATCH_TIMEOUT ?= 5ms
 MAX_GAMES ?= 0
 MCTS_SIMS ?= 800
-TRACE ?= false
+TRACE ?= true
 
 all:
 

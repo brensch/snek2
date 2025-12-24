@@ -5,6 +5,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/brensch/snek2/executor/convert"
 	"github.com/brensch/snek2/game"
 )
 
@@ -55,7 +56,66 @@ func PrintBoard(state *game.GameState) {
 		}
 		sb.WriteString("\n")
 	}
+
+	// Also print the model input layers (channels) for this (you_id) perspective.
+	printEncodedLayers(&sb, state)
 	log.Print(sb.String())
+}
+
+func printEncodedLayers(sb *strings.Builder, state *game.GameState) {
+	dataPtr := convert.StateToFloat32(state)
+	data := *dataPtr
+	defer convert.PutFloatBuffer(dataPtr)
+
+	// Channel layout (10 total):
+	// 0: Food
+	// 1: Dangers / hazards (unused today)
+	// 2..5: Snake body TTL planes (ego + up to 3 enemies)
+	// 6..9: Snake health planes (ego + up to 3 enemies)
+	channelName := func(c int) string {
+		switch c {
+		case 0:
+			return "food"
+		case 1:
+			return "hazards"
+		case 2:
+			return "ego_ttl"
+		case 3:
+			return "enemy1_ttl"
+		case 4:
+			return "enemy2_ttl"
+		case 5:
+			return "enemy3_ttl"
+		case 6:
+			return "ego_health"
+		case 7:
+			return "enemy1_health"
+		case 8:
+			return "enemy2_health"
+		case 9:
+			return "enemy3_health"
+		default:
+			return "unknown"
+		}
+	}
+
+	sb.WriteString("\n--- TRACE Encoded input layers (C,H,W) ---\n")
+	for c := 0; c < convert.Channels; c++ {
+		sb.WriteString(fmt.Sprintf("Layer %d (%s):\n", c, channelName(c)))
+		base := c * convert.Height * convert.Width
+		for y := convert.Height - 1; y >= 0; y-- {
+			for x := 0; x < convert.Width; x++ {
+				v := data[base+y*convert.Width+x]
+				if v == 0 {
+					sb.WriteString("   . ")
+					continue
+				}
+				// Keep it compact but numeric.
+				sb.WriteString(fmt.Sprintf("%4.2f ", v))
+			}
+			sb.WriteString("\n")
+		}
+	}
 }
 
 func isBounds(state *game.GameState, x, y int) bool {
