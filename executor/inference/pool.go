@@ -24,6 +24,8 @@ func (p *OnnxPool) Stats() RuntimeStats {
 	var runNanos int64
 	var last int64
 	queue := 0
+	configBatchSize := 0
+	configBatchTimeoutMs := 0.0
 
 	for _, c := range p.clients {
 		st := c.Stats()
@@ -31,6 +33,10 @@ func (p *OnnxPool) Stats() RuntimeStats {
 		items += st.TotalItems
 		runNanos += st.TotalRunNanos
 		queue += st.QueueLen
+		if configBatchSize == 0 {
+			configBatchSize = st.ConfigBatchSize
+			configBatchTimeoutMs = st.ConfigBatchTimeoutMs
+		}
 		if st.LastBatchSize > last {
 			last = st.LastBatchSize
 		}
@@ -44,13 +50,15 @@ func (p *OnnxPool) Stats() RuntimeStats {
 	}
 
 	return RuntimeStats{
-		TotalBatches:  batches,
-		TotalItems:    items,
-		TotalRunNanos: runNanos,
-		LastBatchSize: last,
-		QueueLen:      queue,
-		AvgBatchSize:  avgBatch,
-		AvgRunMs:      avgRunMs,
+		TotalBatches:         batches,
+		TotalItems:           items,
+		TotalRunNanos:        runNanos,
+		LastBatchSize:        last,
+		QueueLen:             queue,
+		AvgBatchSize:         avgBatch,
+		AvgRunMs:             avgRunMs,
+		ConfigBatchSize:      configBatchSize,
+		ConfigBatchTimeoutMs: configBatchTimeoutMs,
 	}
 }
 

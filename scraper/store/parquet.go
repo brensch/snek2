@@ -12,7 +12,8 @@ import (
 
 // TrainingRow is a single supervised training sample.
 //
-// x is a little-endian float32 tensor flattened as (C,H,W) with C=14, H=W=11.
+// x is a little-endian float32 tensor flattened as (C,H,W) with C=6, H=W=11.
+// Snake planes use a health background + stacked segment count + head/tail hints.
 // policy is the action label: 0=Up, 1=Down, 2=Left, 3=Right.
 // value is the outcome target in [-1..1] from the ego snake perspective.
 //

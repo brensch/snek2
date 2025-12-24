@@ -22,7 +22,7 @@ type GameResult struct {
 	Steps    int
 }
 
-func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, onStep func()) ([]store.TrainingRow, GameResult) {
+func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, sims int, onStep func()) ([]store.TrainingRow, GameResult) {
 	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerId)*1000003))
 	state := createInitialState(rng)
 	gameID := fmt.Sprintf("selfplay_%d_%d", time.Now().UnixNano(), workerId)
@@ -95,7 +95,11 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 					Config: mctsConfig,
 					Client: client,
 				}
-				root, _, err := mctsInstance.Search(ctx, localState, 800)
+				searchSims := sims
+				if searchSims <= 0 {
+					searchSims = 1
+				}
+				root, _, err := mctsInstance.Search(ctx, localState, searchSims)
 				if err != nil {
 					if ctx != nil {
 						select {

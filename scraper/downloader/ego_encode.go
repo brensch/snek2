@@ -9,12 +9,12 @@ import (
 const (
 	Width         = 11
 	Height        = 11
-	Channels      = 14
+	Channels      = 6
 	BytesPerFloat = 4
 	BufferSize    = Channels * Width * Height * BytesPerFloat
 )
 
-// EgoStateToBytes builds the 14-channel ego-centric tensor described in trainer/model.py.
+// EgoStateToBytes builds the ego-centric tensor described in trainer/model.py.
 // Output layout: (C,H,W) float32 little-endian.
 func EgoStateToBytes(frame *FrameData, egoID string) []byte {
 	data := make([]byte, BufferSize)
@@ -70,37 +70,60 @@ func EgoStateToBytes(frame *FrameData, egoID string) []byte {
 		enemies = enemies[:3]
 	}
 
-	// Ego channels
-	if ego != nil {
-		// Head
-		set(2, ego.Body[0].X, ego.Body[0].Y, 1.0)
-
-		// Body counts (including head and tail; stacked segments show as >1)
-		counts := make(map[[2]int]int, len(ego.Body))
-		for _, p := range ego.Body {
-			key := [2]int{p.X, p.Y}
-			counts[key]++
+	encodeSnake := func(c int, s *SnakeData) {
+		if s == nil || s.Health <= 0 || len(s.Body) == 0 {
+			return
 		}
-		for k, n := range counts {
-			set(3, k[0], k[1], float32(n))
+		health := float32(s.Health) / 100.0
+		fillPlane(c, health)
+
+		counts := make([]float32, Width*Height)
+		headMax := make([]float32, Width*Height)
+		tailFlag := make([]float32, Width*Height)
+
+		l := len(s.Body)
+		denom := float32(1)
+		if l > 1 {
+			denom = float32(l - 1)
+		}
+		for i, p := range s.Body {
+			if p.X < 0 || p.X >= Width || p.Y < 0 || p.Y >= Height {
+				continue
+			}
+			idx := p.Y*Width + p.X
+			counts[idx] += 1.0
+			headness := float32(1.0) - (float32(i) / denom) // head=1 .. tail=0
+			if headness > headMax[idx] {
+				headMax[idx] = headness
+			}
+			if i == l-1 {
+				tailFlag[idx] = 1.0
+			}
 		}
 
-		fillPlane(4, float32(ego.Health)/100.0)
+		// Final per-cell value:
+		// - health is present everywhere on the plane (background)
+		// - +count encodes stacked segments (start-of-game stack becomes 3)
+		// - +headMax helps localize the head
+		// - +0.25*tailFlag helps localize tail/persistence (tailFlag=1 and count>1 => persists)
+		for y := 0; y < Height; y++ {
+			for x := 0; x < Width; x++ {
+				idx := y*Width + x
+				cCount := counts[idx]
+				if cCount == 0 {
+					continue
+				}
+				val := health + cCount + headMax[idx] + 0.25*tailFlag[idx]
+				set(c, x, y, val)
+			}
+		}
 	}
 
-	// Enemy channels
-	for i, e := range enemies {
-		base := 5 + i*3
-		set(base, e.Body[0].X, e.Body[0].Y, 1.0) // head
-		counts := make(map[[2]int]int, len(e.Body))
-		for _, p := range e.Body {
-			key := [2]int{p.X, p.Y}
-			counts[key]++
-		}
-		for k, n := range counts {
-			set(base+1, k[0], k[1], float32(n))
-		}
-		fillPlane(base+2, float32(e.Health)/100.0)
+	// Snake channels: 1 plane per snake (health * ordered body mask)
+	encodeSnake(2, ego)
+	for i := range enemies {
+		e := &enemies[i]
+		encodeSnake(3+i, e)
 	}
 
 	return data

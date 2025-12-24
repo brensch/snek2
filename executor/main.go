@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"runtime"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -132,15 +133,26 @@ func (m model) View() string {
 }
 
 func main() {
-	outDir := flag.String("out-dir", "data/generated", "Output directory for generated training parquet batches")
-	workers := flag.Int("workers", 128, "Number of self-play workers")
-	gamesPerFlush := flag.Int("games-per-flush", 50, "Number of games to buffer per parquet flush")
-	maxGames := flag.Int64("max-games", 0, "If > 0, stop after generating this many games (across all workers)")
+	// Use a dedicated FlagSet to avoid any imported package parsing
+	// the global flag.CommandLine before main() runs.
+	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
+	fs.SetOutput(os.Stderr)
+
+	outDir := fs.String("out-dir", "data/generated", "Output directory for generated training parquet batches")
+	workers := fs.Int("workers", 128, "Number of self-play workers")
+	gamesPerFlush := fs.Int("games-per-flush", 50, "Number of games to buffer per parquet flush")
+	maxGames := fs.Int64("max-games", 0, "If > 0, stop after generating this many games (across all workers)")
 	_ = runtime.NumCPU() // keep runtime import useful if you later tune defaults
-	onnxSessions := flag.Int("onnx-sessions", 1, "Number of ONNX Runtime sessions to run in parallel (each has its own batching loop). Start with 1; increase if GPU is underutilized.")
-	onnxBatchSize := flag.Int("onnx-batch-size", inference.DefaultBatchSize, "ONNX inference batch size (larger can improve GPU utilization)")
-	onnxBatchTimeout := flag.Duration("onnx-batch-timeout", inference.DefaultBatchTimeout, "Max time to wait for filling an ONNX batch")
-	flag.Parse()
+	onnxSessions := fs.Int("onnx-sessions", 1, "Number of ONNX Runtime sessions to run in parallel (each has its own batching loop). Start with 1; increase if GPU is underutilized.")
+	onnxBatchSize := fs.Int("onnx-batch-size", inference.DefaultBatchSize, "ONNX inference batch size (larger can improve GPU utilization)")
+	onnxBatchTimeout := fs.Duration("onnx-batch-timeout", inference.DefaultBatchTimeout, "Max time to wait for filling an ONNX batch")
+	modelPathFlag := fs.String("model", "", "Path to ONNX model file (defaults to models/snake_net_fp16_f32io.onnx if present)")
+	trace := fs.Bool("trace", false, "Print a turn-by-turn trace for a single worker (debug)")
+	mctsSims := fs.Int("mcts-sims", 800, "Number of MCTS simulations per move (lower=faster, higher=stronger)")
+
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		log.Fatalf("Flag parse error: %v", err)
+	}
 
 	sigCtx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -156,10 +168,30 @@ func main() {
 	// log.SetOutput(f)
 
 	// Initialize ONNX Client
-	modelPath := "models/snake_net.onnx"
-	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
-		log.Fatalf("Model file not found: %s. Run trainer/export_onnx.py first.", modelPath)
+	modelPath := strings.TrimSpace(*modelPathFlag)
+	if modelPath == "" {
+		// Prefer fp16 compute w/ fp32 I/O (good for Go + tensor cores).
+		preferred := "models/snake_net_fp16_f32io.onnx"
+		if _, err := os.Stat(preferred); err == nil {
+			modelPath = preferred
+		} else {
+			modelPath = "models/snake_net.onnx"
+		}
 	}
+	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
+		log.Fatalf("Model file not found: %s. Run `make export-onnx` first.", modelPath)
+	}
+
+	log.Printf(
+		"Config: workers=%d mcts_sims=%d onnx_sessions=%d onnx_batch_size=%d onnx_batch_timeout=%s model=%s",
+		*workers,
+		*mctsSims,
+		*onnxSessions,
+		*onnxBatchSize,
+		(*onnxBatchTimeout).String(),
+		modelPath,
+	)
+	log.Printf("Args: %q", os.Args)
 
 	var predictor mcts.Predictor
 	var closer interface{ Close() error }
@@ -242,7 +274,7 @@ func main() {
 		go func(workerId int) {
 			defer workerWG.Done()
 			log.Printf("Worker %d started", workerId)
-			trace := workerId == 0
+			doTrace := *trace && workerId == 0
 			for {
 				select {
 				case <-ctx.Done():
@@ -259,7 +291,7 @@ func main() {
 				onStep := func() {
 					totalMoves.Add(1)
 				}
-				examples, result := selfplay.PlayGame(ctx, workerId, mcts.Config{Cpuct: 1.0}, c, trace, onStep)
+				examples, result := selfplay.PlayGame(ctx, workerId, mcts.Config{Cpuct: 1.0}, c, doTrace, *mctsSims, onStep)
 				total := totalGames.Add(1)
 				log.Printf("finished game number %d", total)
 
@@ -320,7 +352,7 @@ func main() {
 			infPerSec := float64(inferences) / duration.Seconds()
 			if sp, ok := statsProvider.(interface{ Stats() inference.RuntimeStats }); ok {
 				st := sp.Stats()
-				log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f | batch avg=%.1f last=%d q=%d run avg=%.2fms", movesPerSec, infPerSec, st.AvgBatchSize, st.LastBatchSize, st.QueueLen, st.AvgRunMs)
+				log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f | batch cfg=%d timeout=%.2fms avg=%.1f last=%d q=%d run avg=%.2fms", movesPerSec, infPerSec, st.ConfigBatchSize, st.ConfigBatchTimeoutMs, st.AvgBatchSize, st.LastBatchSize, st.QueueLen, st.AvgRunMs)
 			} else {
 				log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f", movesPerSec, infPerSec)
 			}

@@ -16,13 +16,13 @@ import (
 )
 
 const (
-	InputSize  = 14 * 11 * 11
+	InputSize  = convert.Channels * convert.Width * convert.Height
 	PolicySize = 4
 	ValueSize  = 1
 )
 
 const (
-	DefaultBatchSize    = 128
+	DefaultBatchSize    = 512
 	DefaultBatchTimeout = 1 * time.Millisecond
 )
 
@@ -32,13 +32,15 @@ type OnnxClientConfig struct {
 }
 
 type RuntimeStats struct {
-	TotalBatches  int64
-	TotalItems    int64
-	TotalRunNanos int64
-	LastBatchSize int64
-	QueueLen      int
-	AvgBatchSize  float64
-	AvgRunMs      float64
+	TotalBatches         int64
+	TotalItems           int64
+	TotalRunNanos        int64
+	LastBatchSize        int64
+	QueueLen             int
+	AvgBatchSize         float64
+	AvgRunMs             float64
+	ConfigBatchSize      int
+	ConfigBatchTimeoutMs float64
 }
 
 type inferenceRequest struct {
@@ -90,12 +92,21 @@ func NewOnnxClientWithConfig(modelPath string, cfg OnnxClientConfig) (*OnnxClien
 				"libonnxruntime.so.1",
 				"libonnxruntime.so.1.23.2",
 			}
-			for _, name := range candidates {
-				abs := filepath.Join(cwd, name)
-				if _, err := os.Stat(abs); err == nil {
-					ort.SetSharedLibraryPath(abs)
+			dir := cwd
+			for up := 0; up < 8; up++ {
+				for _, name := range candidates {
+					abs := filepath.Join(dir, name)
+					if _, err := os.Stat(abs); err == nil {
+						ort.SetSharedLibraryPath(abs)
+						up = 999
+						break
+					}
+				}
+				parent := filepath.Dir(dir)
+				if parent == dir {
 					break
 				}
+				dir = parent
 			}
 		}
 	}
@@ -161,19 +172,48 @@ func ensureLinuxLibraryPath() {
 		return
 	}
 
+	// Also add the repo root (where we keep libonnxruntime*.so and providers) even when
+	// the process starts in a subdirectory (e.g. `go test ./...`).
+	repoDir := cwd
+	for up := 0; up < 8; up++ {
+		if _, err := os.Stat(filepath.Join(repoDir, "libonnxruntime_providers_cuda.so")); err == nil {
+			break
+		}
+		if _, err := os.Stat(filepath.Join(repoDir, "libonnxruntime.so.1")); err == nil {
+			break
+		}
+		parent := filepath.Dir(repoDir)
+		if parent == repoDir {
+			break
+		}
+		repoDir = parent
+	}
+
 	// These are the common locations of CUDA + Torch shared libraries when installed
 	// via pip packages inside the project's .venv.
 	// Don't hardcode python version; glob python*/site-packages.
+	// Important: when running from a subdirectory (e.g. `go test ./...`), the venv
+	// is typically at the repo root, not the current package directory.
 	candidateDirs := []string{cwd}
+	venvBases := []string{cwd}
+	if repoDir != "" && repoDir != cwd {
+		candidateDirs = append(candidateDirs, repoDir)
+		venvBases = append(venvBases, repoDir)
+	}
 
-	patterns := []string{
-		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "nvidia", "*", "lib"),
-		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "triton", "backends", "nvidia", "lib"),
-		filepath.Join(cwd, ".venv", "lib", "python*", "site-packages", "torch", "lib"),
+	patterns := make([]string, 0, 16)
+	for _, base := range venvBases {
+		patterns = append(patterns,
+			filepath.Join(base, ".venv", "lib", "python*", "site-packages", "nvidia", "*", "lib"),
+			filepath.Join(base, ".venv", "lib", "python*", "site-packages", "triton", "backends", "nvidia", "lib"),
+			filepath.Join(base, ".venv", "lib", "python*", "site-packages", "torch", "lib"),
+		)
+	}
+	patterns = append(patterns,
 		filepath.Join(string(filepath.Separator), "opt", "venv", "lib", "python*", "site-packages", "nvidia", "*", "lib"),
 		filepath.Join(string(filepath.Separator), "opt", "venv", "lib", "python*", "site-packages", "triton", "backends", "nvidia", "lib"),
 		filepath.Join(string(filepath.Separator), "opt", "venv", "lib", "python*", "site-packages", "torch", "lib"),
-	}
+	)
 	for _, pat := range patterns {
 		matches, _ := filepath.Glob(pat)
 		for _, m := range matches {
@@ -227,13 +267,15 @@ func (c *OnnxClient) Stats() RuntimeStats {
 	}
 
 	return RuntimeStats{
-		TotalBatches:  batches,
-		TotalItems:    items,
-		TotalRunNanos: runNanos,
-		LastBatchSize: c.lastBatchSize.Load(),
-		QueueLen:      len(c.requestsChan),
-		AvgBatchSize:  avgBatch,
-		AvgRunMs:      avgRunMs,
+		TotalBatches:         batches,
+		TotalItems:           items,
+		TotalRunNanos:        runNanos,
+		LastBatchSize:        c.lastBatchSize.Load(),
+		QueueLen:             len(c.requestsChan),
+		AvgBatchSize:         avgBatch,
+		AvgRunMs:             avgRunMs,
+		ConfigBatchSize:      int(c.cfg.BatchSize),
+		ConfigBatchTimeoutMs: float64(c.cfg.BatchTimeout) / float64(time.Millisecond),
 	}
 }
 
@@ -337,7 +379,7 @@ func (c *OnnxClient) runBatch(requests []inferenceRequest, batchInput []float32)
 	c.lastBatchSize.Store(currentBatchSize)
 
 	// Create input tensor
-	inputShape := []int64{currentBatchSize, 14, 11, 11}
+	inputShape := []int64{currentBatchSize, int64(convert.Channels), int64(convert.Height), int64(convert.Width)}
 	inputTensor, err := ort.NewTensor(ort.NewShape(inputShape...), batchInput)
 	if err != nil {
 		c.failBatch(requests, err)

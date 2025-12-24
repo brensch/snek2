@@ -13,7 +13,7 @@ import (
 const (
 	Width         = 11
 	Height        = 11
-	Channels      = 14
+	Channels      = 10
 	BytesPerFloat = 4
 	BufferSize    = Channels * Width * Height * BytesPerFloat
 	FloatSize     = Channels * Width * Height
@@ -67,17 +67,51 @@ func StateToFloat32(state *game.GameState) *[]float32 {
 		data[idx] = val
 	}
 
-	fillPlane := func(c int, val float32) {
-		start := c * Height * Width
-		end := start + (Height * Width)
-		for i := start; i < end; i++ {
-			data[i] = val
-		}
-	}
+	// Channel layout (10 total):
+	// 0: Food
+	// 1: Dangers / hazards (currently unavailable in GameState; left as zeros)
+	// 2..5: Snake body TTL planes (ego + up to 3 enemies)
+	// 6..9: Snake health planes (ego + up to 3 enemies) where the entire plane is health
 
 	// Channel 0: Food
 	for _, p := range state.Food {
 		set(0, int(p.X), int(p.Y), 1.0)
+	}
+
+	encodeSnakeTTLAndHealth := func(ttlC int, healthC int, s *game.Snake) {
+		if s == nil || s.Health <= 0 {
+			return
+		}
+		health := float32(s.Health) / 100.0
+
+		// Health plane: entire channel is health.
+		start := healthC * Height * Width
+		end := start + (Height * Width)
+		for i := start; i < end; i++ {
+			data[i] = health
+		}
+
+		if len(s.Body) == 0 {
+			return
+		}
+
+		// TTL plane: per occupied cell store a monotonically decreasing "time-to-live" value
+		// from head -> tail. Normalized to (0,1], tail is smallest.
+		l := len(s.Body)
+		if l <= 0 {
+			return
+		}
+		denom := float32(l)
+		for i, p := range s.Body {
+			x := int(p.X)
+			y := int(p.Y)
+			if x < 0 || x >= Width || y < 0 || y >= Height {
+				continue
+			}
+			// Head i=0 => 1.0, tail i=l-1 => 1/l.
+			ttl := float32(l-i) / denom
+			data[ttlC*Height*Width+y*Width+x] = ttl
+		}
 	}
 
 	// Find ego snake and alive enemies
@@ -101,31 +135,16 @@ func StateToFloat32(state *game.GameState) *[]float32 {
 		enemies = enemies[:3]
 	}
 
-	if ego != nil {
-		head := ego.Body[0]
-		set(2, int(head.X), int(head.Y), 1.0)
-		counts := make(map[[2]int]int, len(ego.Body))
-		for _, p := range ego.Body {
-			counts[[2]int{int(p.X), int(p.Y)}]++
+	// Snake channels: 4 snakes (ego + 3 enemies)
+	// TTL:    2..5
+	// Health:  6..9
+	encodeSnakeTTLAndHealth(2, 6, ego)
+	for i := 0; i < 3; i++ {
+		var s *game.Snake
+		if i < len(enemies) {
+			s = enemies[i]
 		}
-		for k, n := range counts {
-			set(3, k[0], k[1], float32(n))
-		}
-		fillPlane(4, float32(ego.Health)/100.0)
-	}
-
-	for i, e := range enemies {
-		base := 5 + i*3
-		head := e.Body[0]
-		set(base, int(head.X), int(head.Y), 1.0)
-		counts := make(map[[2]int]int, len(e.Body))
-		for _, p := range e.Body {
-			counts[[2]int{int(p.X), int(p.Y)}]++
-		}
-		for k, n := range counts {
-			set(base+1, k[0], k[1], float32(n))
-		}
-		fillPlane(base+2, float32(e.Health)/100.0)
+		encodeSnakeTTLAndHealth(3+i, 7+i, s)
 	}
 
 	return dataPtr
@@ -135,15 +154,17 @@ func StateToFloat32(state *game.GameState) *[]float32 {
 // Output shape: [Channels, Height, Width] (C, H, W)
 // Format: Float32 (Little Endian)
 // Encoding is ego-centric and uses state.you_id as the ego snake.
-// Channels match trainer/model.py:
+// Channels match the Go selfplay/training encoding:
 // 0 Food
-// 1 Hazards (unused by executor state today)
-// 2 My Head
-// 3 My Body (stacked counts)
-// 4 My Health (global plane)
-// 5-7 Enemy 1 (head, body, health)
-// 8-10 Enemy 2 (head, body, health)
-// 11-13 Enemy 3 (head, body, health)
+// 1 Dangers / hazards (unused by executor state today)
+// 2 Ego body TTL
+// 3 Enemy 1 body TTL
+// 4 Enemy 2 body TTL
+// 5 Enemy 3 body TTL
+// 6 Ego health plane
+// 7 Enemy 1 health plane
+// 8 Enemy 2 health plane
+// 9 Enemy 3 health plane
 // Returns a pointer to the byte slice. Caller must return it to pool using PutBuffer.
 func StateToBytes(state *game.GameState) *[]byte {
 	// Get buffer from pool
@@ -164,18 +185,42 @@ func StateToBytes(state *game.GameState) *[]byte {
 		binary.LittleEndian.PutUint32(data[idx:], math.Float32bits(val))
 	}
 
-	fillPlane := func(c int, val float32) {
-		bits := math.Float32bits(val)
-		startIdx := c * Height * Width * BytesPerFloat
-		endIdx := startIdx + (Height * Width * BytesPerFloat)
-		for i := startIdx; i < endIdx; i += 4 {
-			binary.LittleEndian.PutUint32(data[i:], bits)
-		}
-	}
-
 	// Channel 0: Food
 	for _, p := range state.Food {
 		set(0, int(p.X), int(p.Y), 1.0)
+	}
+
+	encodeSnakeTTLAndHealth := func(ttlC int, healthC int, s *game.Snake) {
+		if s == nil || s.Health <= 0 {
+			return
+		}
+		health := float32(s.Health) / 100.0
+
+		// Health plane: entire channel is health.
+		healthBits := math.Float32bits(health)
+		startIdx := healthC * Height * Width * BytesPerFloat
+		endIdx := startIdx + (Height * Width * BytesPerFloat)
+		for i := startIdx; i < endIdx; i += 4 {
+			binary.LittleEndian.PutUint32(data[i:], healthBits)
+		}
+
+		if len(s.Body) == 0 {
+			return
+		}
+		l := len(s.Body)
+		if l <= 0 {
+			return
+		}
+		denom := float32(l)
+		for i, p := range s.Body {
+			x := int(p.X)
+			y := int(p.Y)
+			if x < 0 || x >= Width || y < 0 || y >= Height {
+				continue
+			}
+			ttl := float32(l-i) / denom
+			set(ttlC, x, y, ttl)
+		}
 	}
 
 	// Find ego snake and alive enemies
@@ -199,37 +244,13 @@ func StateToBytes(state *game.GameState) *[]byte {
 		enemies = enemies[:3]
 	}
 
-	// Ego channels
-	if ego != nil {
-		// Head
-		head := ego.Body[0]
-		set(2, int(head.X), int(head.Y), 1.0)
-
-		// Body counts (including head and tail)
-		counts := make(map[[2]int]int, len(ego.Body))
-		for _, p := range ego.Body {
-			counts[[2]int{int(p.X), int(p.Y)}]++
+	encodeSnakeTTLAndHealth(2, 6, ego)
+	for i := 0; i < 3; i++ {
+		var s *game.Snake
+		if i < len(enemies) {
+			s = enemies[i]
 		}
-		for k, n := range counts {
-			set(3, k[0], k[1], float32(n))
-		}
-
-		fillPlane(4, float32(ego.Health)/100.0)
-	}
-
-	// Enemy channels
-	for i, e := range enemies {
-		base := 5 + i*3
-		head := e.Body[0]
-		set(base, int(head.X), int(head.Y), 1.0)
-		counts := make(map[[2]int]int, len(e.Body))
-		for _, p := range e.Body {
-			counts[[2]int{int(p.X), int(p.Y)}]++
-		}
-		for k, n := range counts {
-			set(base+1, k[0], k[1], float32(n))
-		}
-		fillPlane(base+2, float32(e.Health)/100.0)
+		encodeSnakeTTLAndHealth(3+i, 7+i, s)
 	}
 
 	return dataPtr

@@ -8,14 +8,16 @@ PIP = $(VENV_DIR)/bin/pip
 
 # Executor tuning (override like: make generate WORKERS=256 ONNX_BATCH_SIZE=512)
 OUT_DIR ?= data/generated
-WORKERS ?= 128
+WORKERS ?= 512
 GAMES_PER_FLUSH ?= 50
 ONNX_SESSIONS ?= 1
-# Effective max in-flight inference requests is ~ WORKERS * 2 (two snakes per game).
-# Default batch size to that so we can actually fill batches.
-MAX_INFLIGHT ?= $(shell echo $$(( $(WORKERS) * 2 )) )
-ONNX_BATCH_SIZE ?= $(MAX_INFLIGHT)
-ONNX_BATCH_TIMEOUT ?= 2ms
+# Default batch size target.
+# Note: effective batch is limited by available in-flight inference requests.
+ONNX_BATCH_SIZE ?= 512
+ONNX_BATCH_TIMEOUT ?= 5ms
+MAX_GAMES ?= 0
+MCTS_SIMS ?= 800
+TRACE ?= false
 
 all:
 
@@ -43,21 +45,43 @@ run-py: $(VENV_DIR)
 
 run-go:
 	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
-	go run ./executor
+	go run ./executor \
+		-workers $(WORKERS) \
+		-trace=$(TRACE) \
+		-mcts-sims $(MCTS_SIMS) \
+		-onnx-sessions $(ONNX_SESSIONS) \
+		-onnx-batch-size $(ONNX_BATCH_SIZE) \
+		-onnx-batch-timeout $(ONNX_BATCH_TIMEOUT)
 
 train: $(VENV_DIR)
-	$(PYTHON) trainer/train.py
+	$(PYTHON) trainer/train.py $(ARGS)
 
 export-onnx: $(VENV_DIR)
-	$(PYTHON) trainer/export_onnx.py
+	$(PYTHON) trainer/export_onnx.py --in-channels 10 --dtype fp16-f32io --out models/snake_net_fp16_f32io.onnx
+	ln -sf snake_net_fp16_f32io.onnx models/snake_net.onnx
+
+init-ckpt: $(VENV_DIR)
+	$(PYTHON) trainer/init_ckpt.py --out models/latest.pt --in-channels 10
+
+reset:
+	rm -f models/latest.pt models_bak/latest.pt models/snake_net_fp16_f32io.onnx models/snake_net.onnx
+	rm -rf data/generated/tmp data/generated/*.parquet 2>/dev/null || true
+
+bootstrap: reset init-ckpt export-onnx
+	$(MAKE) generate WORKERS=32 GAMES_PER_FLUSH=10 MAX_GAMES=200 MCTS_SIMS=64 TRACE=false
+	$(MAKE) train ARGS="--epochs 1 --data-dir data/generated --model-path models/latest.pt"
 
 generate:
 	@mkdir -p $(OUT_DIR)
+	@echo "Running executor with: WORKERS=$(WORKERS) ONNX_SESSIONS=$(ONNX_SESSIONS) ONNX_BATCH_SIZE=$(ONNX_BATCH_SIZE) ONNX_BATCH_TIMEOUT=$(ONNX_BATCH_TIMEOUT) MCTS_SIMS=$(MCTS_SIMS) MAX_GAMES=$(MAX_GAMES)"
 	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
 	go run ./executor \
 		-out-dir $(OUT_DIR) \
 		-workers $(WORKERS) \
 		-games-per-flush $(GAMES_PER_FLUSH) \
+		-trace=$(TRACE) \
+		-mcts-sims $(MCTS_SIMS) \
+		-max-games $(MAX_GAMES) \
 		-onnx-sessions $(ONNX_SESSIONS) \
 		-onnx-batch-size $(ONNX_BATCH_SIZE) \
 		-onnx-batch-timeout $(ONNX_BATCH_TIMEOUT)

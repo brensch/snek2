@@ -16,18 +16,21 @@ from model import EgoSnakeNet
 import polars as pl
 DATA_DIR = "data"
 MODEL_PATH = "models/latest.pt"
+WIDTH = 11
+HEIGHT = 11
+IN_CHANNELS = 10
 BATCH_SIZE = 256      # Larger batch = faster training (if GPU memory allows)
 EPOCHS = 10           # More passes over the data
 LR = 0.01             # 10x higher learning rate for faster convergence
-EXPECTED_X_BYTES = 14 * 11 * 11 * 4
+EXPECTED_X_BYTES = IN_CHANNELS * WIDTH * HEIGHT * 4
 
 
 def _decode_x_column(x_col) -> np.ndarray:
-    """Decode a Polars Binary column of fixed-size float32 planes into (N,14,11,11)."""
+    """Decode a Polars Binary column of fixed-size float32 planes into (N,C,H,W)."""
     # Polars returns Python objects for Binary (bytes/memoryview).
     x_list = x_col.to_list()
     n = len(x_list)
-    states = np.empty((n, 14, 11, 11), dtype=np.float32)
+    states = np.empty((n, IN_CHANNELS, HEIGHT, WIDTH), dtype=np.float32)
     valid_mask = np.ones(n, dtype=bool)
     for i, x in enumerate(x_list):
         if isinstance(x, memoryview):
@@ -35,7 +38,7 @@ def _decode_x_column(x_col) -> np.ndarray:
         if not isinstance(x, (bytes, bytearray)) or len(x) != EXPECTED_X_BYTES:
             valid_mask[i] = False
             continue
-        states[i] = np.frombuffer(x, dtype=np.float32).reshape(14, 11, 11)
+        states[i] = np.frombuffer(x, dtype=np.float32).reshape(IN_CHANNELS, HEIGHT, WIDTH)
     if not valid_mask.all():
         states = states[valid_mask]
     return states
@@ -48,7 +51,7 @@ def _decode_x_column_with_mask(x_col) -> tuple[np.ndarray, np.ndarray]:
     """
     x_list = x_col.to_list()
     n = len(x_list)
-    states = np.empty((n, 14, 11, 11), dtype=np.float32)
+    states = np.empty((n, IN_CHANNELS, HEIGHT, WIDTH), dtype=np.float32)
     valid_mask = np.ones(n, dtype=bool)
     for i, x in enumerate(x_list):
         if isinstance(x, memoryview):
@@ -56,7 +59,7 @@ def _decode_x_column_with_mask(x_col) -> tuple[np.ndarray, np.ndarray]:
         if not isinstance(x, (bytes, bytearray)) or len(x) != EXPECTED_X_BYTES:
             valid_mask[i] = False
             continue
-        states[i] = np.frombuffer(x, dtype=np.float32).reshape(14, 11, 11)
+        states[i] = np.frombuffer(x, dtype=np.float32).reshape(IN_CHANNELS, HEIGHT, WIDTH)
     if not valid_mask.all():
         states = states[valid_mask]
     return states, valid_mask
@@ -72,7 +75,7 @@ def _parquet_row_count(path: str) -> int:
 
 
 def _bytes_per_example(*, states_dtype: torch.dtype, values_dtype: torch.dtype) -> int:
-    states_bytes = 14 * 11 * 11 * torch.tensor([], dtype=states_dtype).element_size()
+    states_bytes = IN_CHANNELS * HEIGHT * WIDTH * torch.tensor([], dtype=states_dtype).element_size()
     policy_bytes = torch.tensor([], dtype=torch.long).element_size()
     value_bytes = torch.tensor([], dtype=values_dtype).element_size()
     return int(states_bytes + policy_bytes + value_bytes)
@@ -141,12 +144,12 @@ def _load_dataset_direct_to_vram(
     if estimated <= 0:
         return PreloadedSnakeDataset(
             [],
-            states=torch.empty((0, 14, 11, 11), device=device, dtype=states_dtype),
+            states=torch.empty((0, IN_CHANNELS, HEIGHT, WIDTH), device=device, dtype=states_dtype),
             policies=torch.empty((0,), device=device, dtype=torch.long),
             values=torch.empty((0,), device=device, dtype=values_dtype),
         )
 
-    states_gpu = torch.empty((estimated, 14, 11, 11), device=device, dtype=states_dtype)
+    states_gpu = torch.empty((estimated, IN_CHANNELS, HEIGHT, WIDTH), device=device, dtype=states_dtype)
     policies_gpu = torch.empty((estimated,), device=device, dtype=torch.long)
     values_gpu = torch.empty((estimated,), device=device, dtype=values_dtype)
 
@@ -205,7 +208,7 @@ def _load_dataset_direct_to_vram(
     if write == 0:
         return PreloadedSnakeDataset(
             [],
-            states=torch.empty((0, 14, 11, 11), device=device, dtype=states_dtype),
+            states=torch.empty((0, IN_CHANNELS, HEIGHT, WIDTH), device=device, dtype=states_dtype),
             policies=torch.empty((0,), device=device, dtype=torch.long),
             values=torch.empty((0,), device=device, dtype=values_dtype),
         )
@@ -284,7 +287,7 @@ class PreloadedSnakeDataset(Dataset):
                 break
 
         if total == 0:
-            self.states = torch.empty((0, 14, 11, 11), dtype=torch.float32)
+            self.states = torch.empty((0, IN_CHANNELS, HEIGHT, WIDTH), dtype=torch.float32)
             self.policies = torch.empty((0,), dtype=torch.long)
             self.values = torch.empty((0,), dtype=torch.float32)
             return
@@ -459,6 +462,18 @@ def parse_args():
     parser.add_argument("--no-persistent-workers", action="store_true")
     parser.add_argument("--amp", action="store_true", help="Enable mixed precision on CUDA")
     parser.add_argument("--no-amp", action="store_true")
+    parser.add_argument(
+        "--channels-last",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use NHWC (channels_last) memory format for Conv2d speed on CUDA",
+    )
+    parser.add_argument(
+        "--compile",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use torch.compile(model, mode='reduce-overhead') when available",
+    )
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-files", type=int, default=0, help="0 = no limit")
     parser.add_argument("--max-examples", type=int, default=0, help="0 = no limit")
@@ -554,6 +569,7 @@ def train():
 
     pin_memory = torch.cuda.is_available() and (not args.dataset_in_vram)
     amp_enabled = torch.cuda.is_available() and (args.amp or not args.no_amp)
+    use_channels_last = torch.cuda.is_available() and bool(args.channels_last)
 
     if args.no_persistent_workers:
         persistent_workers = False
@@ -574,7 +590,7 @@ def train():
     )
 
     # Load Model
-    model = EgoSnakeNet(width=11, height=11).to(device)
+    model = EgoSnakeNet(width=WIDTH, height=HEIGHT).to(device)
     if os.path.exists(args.model_path):
         print(f"Loading existing model from {args.model_path}")
         try:
@@ -593,7 +609,16 @@ def train():
                 break
         if nonfinite:
             print("Warning: model parameters contain NaN/Inf; reinitializing model weights")
-            model = EgoSnakeNet(width=11, height=11).to(device)
+            model = EgoSnakeNet(width=WIDTH, height=HEIGHT).to(device)
+
+    if torch.cuda.is_available() and args.channels_last:
+        model = model.to(memory_format=torch.channels_last)
+
+    if args.compile and hasattr(torch, "compile"):
+        try:
+            model = torch.compile(model, mode="reduce-overhead")
+        except RuntimeError as e:
+            print(f"Warning: torch.compile failed; continuing without compile ({e})")
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
 
@@ -660,7 +685,7 @@ def train():
                 )
                 dataset = PreloadedSnakeDataset(
                     [],
-                    states=torch.empty((0, 14, 11, 11), device=device, dtype=states_dtype),
+                    states=torch.empty((0, IN_CHANNELS, HEIGHT, WIDTH), device=device, dtype=states_dtype),
                     policies=torch.empty((0,), device=device, dtype=torch.long),
                     values=torch.empty((0,), device=device, dtype=values_dtype),
                 )
@@ -856,8 +881,11 @@ def train():
                             policies = chunk_ds.policies[start : start + args.batch_size]
                             values = chunk_ds.values[start : start + args.batch_size]
 
+                        if use_channels_last:
+                            states = states.contiguous(memory_format=torch.channels_last)
+
                         optimizer.zero_grad(set_to_none=True)
-                        with torch.amp.autocast(device_type="cuda", enabled=amp_enabled):
+                        with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp_enabled):
                             pred_policies, pred_values = model(states)
                             loss_policy = ce_loss(pred_policies, policies)
                             loss_value = mse_loss(pred_values.squeeze(1).float(), values.float())
@@ -911,7 +939,10 @@ def train():
 
                 optimizer.zero_grad(set_to_none=True)
 
-                with torch.amp.autocast(device_type="cuda", enabled=amp_enabled):
+                if use_channels_last:
+                    states = states.contiguous(memory_format=torch.channels_last)
+
+                with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp_enabled):
                     pred_policies, pred_values = model(states)
 
                     loss_policy = ce_loss(pred_policies, policies)
@@ -941,9 +972,12 @@ def train():
                 policies = policies.to(device, non_blocking=True, dtype=torch.long)
                 values = values.to(device, non_blocking=True, dtype=torch.float32)
 
+                if use_channels_last:
+                    states = states.contiguous(memory_format=torch.channels_last)
+
                 optimizer.zero_grad(set_to_none=True)
 
-                with torch.amp.autocast(device_type="cuda", enabled=amp_enabled):
+                with torch.amp.autocast(device_type="cuda", dtype=torch.bfloat16, enabled=amp_enabled):
                     pred_policies, pred_values = model(states)
 
                     loss_policy = ce_loss(pred_policies, policies)

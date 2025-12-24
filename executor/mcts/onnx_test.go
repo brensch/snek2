@@ -63,15 +63,16 @@ func (c *OnnxInferenceClient) Predict(state *game.GameState) ([]float32, []float
 	defer convert.PutBuffer(byteDataPtr)
 
 	// Convert bytes to float32 slice
-	// Input size: 14 * 11 * 11 = 1694 floats
-	floats := make([]float32, 1694)
-	for i := 0; i < 1694; i++ {
+	// Input size: Channels * 11 * 11 floats
+	inputSize := convert.Channels * convert.Width * convert.Height
+	floats := make([]float32, inputSize)
+	for i := 0; i < inputSize; i++ {
 		bits := uint32(byteData[i*4]) | uint32(byteData[i*4+1])<<8 | uint32(byteData[i*4+2])<<16 | uint32(byteData[i*4+3])<<24
 		floats[i] = math.Float32frombits(bits)
 	}
 
 	// Create input tensor
-	inputShape := []int64{1, 14, 11, 11}
+	inputShape := []int64{1, int64(convert.Channels), int64(convert.Height), int64(convert.Width)}
 	inputTensor, err := ort.NewTensor(ort.NewShape(inputShape...), floats)
 	if err != nil {
 		return nil, nil, err
