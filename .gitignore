@@ -49,3 +49,4 @@ __pycache__/
 *.so*
 
 *.claimed
+node_modules/

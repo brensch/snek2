@@ -439,11 +439,66 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 		winnerId = "" // Draw or everyone died
 	}
 
+	// Record the terminal (game-over) state as a final row.
+	// The per-turn loop records snapshots before applying moves; without this,
+	// completed games appear to stop in a non-terminal position.
+	sortedSnakes := make([]game.Snake, len(state.Snakes))
+	copy(sortedSnakes, state.Snakes)
+	sort.Slice(sortedSnakes, func(i, j int) bool {
+		return sortedSnakes[i].Id < sortedSnakes[j].Id
+	})
+
+	terminalRow := store.ArchiveTurnRow{
+		GameID:  gameID,
+		Turn:    state.Turn,
+		Width:   state.Width,
+		Height:  state.Height,
+		Source:  "selfplay",
+		FoodX:   nil,
+		FoodY:   nil,
+		HazardX: nil,
+		HazardY: nil,
+		Snakes:  nil,
+	}
+	if len(state.Food) > 0 {
+		terminalRow.FoodX = make([]int32, 0, len(state.Food))
+		terminalRow.FoodY = make([]int32, 0, len(state.Food))
+		for _, p := range state.Food {
+			terminalRow.FoodX = append(terminalRow.FoodX, p.X)
+			terminalRow.FoodY = append(terminalRow.FoodY, p.Y)
+		}
+	}
+
+	terminalRow.Snakes = make([]store.ArchiveSnake, 0, len(sortedSnakes))
+	for _, s := range sortedSnakes {
+		alive := s.Health > 0 && len(s.Body) > 0
+		snakeRow := store.ArchiveSnake{
+			ID:     s.Id,
+			Alive:  alive,
+			Health: s.Health,
+			Policy: -1,
+			Value:  0,
+		}
+		if len(s.Body) > 0 {
+			snakeRow.BodyX = make([]int32, 0, len(s.Body))
+			snakeRow.BodyY = make([]int32, 0, len(s.Body))
+			for _, bp := range s.Body {
+				snakeRow.BodyX = append(snakeRow.BodyX, bp.X)
+				snakeRow.BodyY = append(snakeRow.BodyY, bp.Y)
+			}
+		}
+		terminalRow.Snakes = append(terminalRow.Snakes, snakeRow)
+	}
+
+	rows = append(rows, terminalRow)
+
 	// Assign values after outcome is known.
 	for i := range rows {
 		for j := range rows[i].Snakes {
 			if winnerId == "" {
-				rows[i].Snakes[j].Value = 0
+				// Treat draws as a negative outcome to discourage "suicidal" play
+				// where both snakes die simultaneously.
+				rows[i].Snakes[j].Value = -0.5
 				continue
 			}
 			if rows[i].Snakes[j].ID == winnerId {
