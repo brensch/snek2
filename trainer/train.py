@@ -24,26 +24,6 @@ EPOCHS = 10           # More passes over the data
 LR = 0.01             # 10x higher learning rate for faster convergence
 EXPECTED_X_BYTES = IN_CHANNELS * WIDTH * HEIGHT * 4
 
-
-def _decode_x_column(x_col) -> np.ndarray:
-    """Decode a Polars Binary column of fixed-size float32 planes into (N,C,H,W)."""
-    # Polars returns Python objects for Binary (bytes/memoryview).
-    x_list = x_col.to_list()
-    n = len(x_list)
-    states = np.empty((n, IN_CHANNELS, HEIGHT, WIDTH), dtype=np.float32)
-    valid_mask = np.ones(n, dtype=bool)
-    for i, x in enumerate(x_list):
-        if isinstance(x, memoryview):
-            x = x.tobytes()
-        if not isinstance(x, (bytes, bytearray)) or len(x) != EXPECTED_X_BYTES:
-            valid_mask[i] = False
-            continue
-        states[i] = np.frombuffer(x, dtype=np.float32).reshape(IN_CHANNELS, HEIGHT, WIDTH)
-    if not valid_mask.all():
-        states = states[valid_mask]
-    return states
-
-
 def _decode_x_column_with_mask(x_col) -> tuple[np.ndarray, np.ndarray]:
     """Decode x column and return (states, valid_mask).
 
