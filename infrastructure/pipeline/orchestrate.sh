@@ -9,10 +9,12 @@ set -euo pipefail
 : "${PROCESSED_DIR:=processed}"
 : "${MODEL_DIR:=models}"
 : "${HISTORY_DIR:=${MODEL_DIR}/history}"
+: "${WORKSPACE_DIR:=$(pwd)}"       # repo root; /workspace in container
 
 : "${GENERATE_GAMES:=128}"        # per cycle
 : "${WORKERS:=128}"
 : "${GAMES_PER_FLUSH:=64}"
+: "${MCTS_SIMS:=800}"
 : "${ONNX_SESSIONS:=1}"
 : "${ONNX_BATCH_SIZE:=0}"        # 0 = executor default
 : "${ONNX_BATCH_TIMEOUT:=2ms}"
@@ -24,6 +26,7 @@ set -euo pipefail
 : "${SLEEP_BETWEEN_CYCLES:=0}"   # seconds
 : "${MIN_FILE_AGE_SECONDS:=0}"   # 0 disables age gating (writers use atomic tmp+rename)
 : "${ARCHIVE_EXISTING_ON_START:=1}"  # move existing shards to processed/* before first cycle
+: "${MAX_CYCLES:=0}"             # 0 = infinite
 
 # If running as a non-root user in a container, ensure we have a writable HOME/cache.
 # Some environments set HOME=/, which is not writable.
@@ -39,6 +42,16 @@ export GOMODCACHE="${GOMODCACHE:-${GOPATH}/pkg/mod}"
 mkdir -p "${XDG_CACHE_HOME}" "${GOCACHE}" "${GOMODCACHE}" || true
 
 mkdir -p "${GENERATED_DIR}" "${SCRAPED_DIR}" "${PROCESSED_DIR}/generated" "${PROCESSED_DIR}/scraped" "${HISTORY_DIR}"
+
+# Ensure we have a model and ONNX before starting cycle 1.
+if [[ ! -f "${MODEL_DIR}/latest.pt" ]]; then
+  echo "[startup] missing ${MODEL_DIR}/latest.pt; initializing"
+  python3 trainer/init_ckpt.py --out "${MODEL_DIR}/latest.pt" --in-channels 10
+fi
+if [[ ! -f "${MODEL_DIR}/snake_net.onnx" ]]; then
+  echo "[startup] missing ${MODEL_DIR}/snake_net.onnx; exporting from latest.pt"
+  python3 trainer/export_onnx.py --ckpt "${MODEL_DIR}/latest.pt" --out "${MODEL_DIR}/snake_net.onnx"
+fi
 
 if [[ "${ARCHIVE_EXISTING_ON_START}" == "1" ]]; then
   # Treat any pre-existing shards as "old" and move them out of the active dirs
@@ -79,9 +92,9 @@ while true; do
     fi
   done
   if [[ ${#extra_ld[@]} -gt 0 ]]; then
-    export LD_LIBRARY_PATH="/workspace:$(IFS=:; echo "${extra_ld[*]}"):${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="${WORKSPACE_DIR}:$(IFS=:; echo "${extra_ld[*]}"):${LD_LIBRARY_PATH:-}"
   else
-    export LD_LIBRARY_PATH="/workspace:${LD_LIBRARY_PATH:-}"
+    export LD_LIBRARY_PATH="${WORKSPACE_DIR}:${LD_LIBRARY_PATH:-}"
   fi
 
   echo "[cycle ${cycle}] generating ${GENERATE_GAMES} games using ${MODEL_DIR}/snake_net.onnx"
@@ -90,6 +103,7 @@ while true; do
     -out-dir "${GENERATED_DIR}"
     -workers "${WORKERS}"
     -games-per-flush "${GAMES_PER_FLUSH}"
+    -mcts-sims "${MCTS_SIMS}"
     -onnx-sessions "${ONNX_SESSIONS}"
     -onnx-batch-timeout "${ONNX_BATCH_TIMEOUT}"
     -max-games "${GENERATE_GAMES}"
@@ -101,7 +115,7 @@ while true; do
   go run ./executor "${gen_args[@]}"
 
   # Build an explicit per-cycle training set (symlinks) so we can archive consumed shards.
-  train_dir="/workspace/.train_sets/snek2_train_${ts}"
+  train_dir="${WORKSPACE_DIR}/.train_sets/snek2_train_${ts}"
   mkdir -p "${train_dir}"
 
   # Only include fully-written parquet shards (exclude tmp).
@@ -174,6 +188,11 @@ while true; do
   fi
 
   echo "[cycle ${cycle}] done (latest.pt -> ${ckpt_path}, snake_net.onnx -> ${onnx_path})"
+
+  if [[ "${MAX_CYCLES}" =~ ^[0-9]+$ ]] && [[ "${MAX_CYCLES}" -gt 0 ]] && [[ "${cycle}" -ge "${MAX_CYCLES}" ]]; then
+    echo "[cycle ${cycle}] reached MAX_CYCLES=${MAX_CYCLES}; exiting"
+    exit 0
+  fi
 
   if [[ "${SLEEP_BETWEEN_CYCLES}" != "0" ]]; then
     sleep "${SLEEP_BETWEEN_CYCLES}"
