@@ -207,9 +207,14 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 
 				// If no valid moves found (e.g. trapped), pick a default
 				if totalVisits == 0 {
+					oneHot := []float32{1, 0, 0, 0}
 					movesMu.Lock()
 					moves[id] = 0 // Default Up
 					movesMu.Unlock()
+
+					policiesMu.Lock()
+					policies[id] = oneHot
+					policiesMu.Unlock()
 					return
 				}
 
@@ -393,17 +398,23 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 		for _, s := range sortedSnakes {
 			alive := s.Health > 0 && len(s.Body) > 0
 			policy := int32(-1)
+			var policyProbs []float32
 			if alive {
 				if move, ok := moves[s.Id]; ok {
 					policy = int32(move)
 				}
+				if p, ok := policies[s.Id]; ok {
+					// Copy to avoid sharing underlying arrays.
+					policyProbs = append([]float32(nil), p...)
+				}
 			}
 			snakeRow := store.ArchiveSnake{
-				ID:     s.Id,
-				Alive:  alive,
-				Health: s.Health,
-				Policy: policy,
-				Value:  0,
+				ID:          s.Id,
+				Alive:       alive,
+				Health:      s.Health,
+				Policy:      policy,
+				PolicyProbs: policyProbs,
+				Value:       0,
 			}
 			if len(s.Body) > 0 {
 				snakeRow.BodyX = make([]int32, 0, len(s.Body))
@@ -473,11 +484,12 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 	for _, s := range sortedSnakes {
 		alive := s.Health > 0 && len(s.Body) > 0
 		snakeRow := store.ArchiveSnake{
-			ID:     s.Id,
-			Alive:  alive,
-			Health: s.Health,
-			Policy: -1,
-			Value:  0,
+			ID:          s.Id,
+			Alive:       alive,
+			Health:      s.Health,
+			Policy:      -1,
+			PolicyProbs: nil,
+			Value:       0,
 		}
 		if len(s.Body) > 0 {
 			snakeRow.BodyX = make([]int32, 0, len(s.Body))

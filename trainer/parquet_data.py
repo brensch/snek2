@@ -64,17 +64,46 @@ def _decode_states(
 
 
 def _read_parquet_examples(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    n_moves = 4
+
+    def decode_policy_probs_from_scalar_cols(df: pl.DataFrame) -> np.ndarray:
+        cols = ["policy_p0", "policy_p1", "policy_p2", "policy_p3"]
+        for c in cols:
+            if c not in df.columns:
+                raise ValueError(f"missing {c} in {path}")
+        arr = df.select(cols).to_numpy()
+        if arr.ndim != 2 or arr.shape[1] != n_moves:
+            raise ValueError(f"invalid policy_p* shape {arr.shape} in {path}")
+        return arr.astype(np.float32, copy=False)
+
+    def decode_policy_probs(col: pl.Series) -> np.ndarray:
+        # Polars list/array columns come back as python lists per row.
+        lst = col.to_list()
+        n = len(lst)
+        out = np.zeros((n, n_moves), dtype=np.float32)
+        for i, v in enumerate(lst):
+            if v is None:
+                continue
+            try:
+                arr = np.asarray(v, dtype=np.float32)
+            except Exception:
+                continue
+            if arr.shape[0] != n_moves:
+                continue
+            out[i] = arr
+        return out
+
     # Preferred format: raw state JSON.
     try:
-        df = pl.read_parquet(path, columns=["state", "policy", "value"])
+        df = pl.read_parquet(path, columns=["state", "policy_probs", "value"])
         state_list = df.get_column("state").to_list()
-        policies = df.get_column("policy").to_numpy().astype(np.int64, copy=False)
+        policy_probs = decode_policy_probs(df.get_column("policy_probs"))
         values = df.get_column("value").to_numpy().astype(np.float32, copy=False)
 
         xs: list[np.ndarray] = []
-        ps: list[np.int64] = []
+        ps: list[np.ndarray] = []
         vs: list[np.float32] = []
-        n_rows = min(len(state_list), int(policies.shape[0]), int(values.shape[0]))
+        n_rows = min(len(state_list), int(policy_probs.shape[0]), int(values.shape[0]))
         for i in range(n_rows):
             sb = state_list[i]
             if isinstance(sb, memoryview):
@@ -89,47 +118,54 @@ def _read_parquet_examples(path: str) -> tuple[np.ndarray, np.ndarray, np.ndarra
             if x is None:
                 continue
             xs.append(x)
-            ps.append(policies[i])
+            p = policy_probs[i]
+            if int(p.shape[0]) != n_moves:
+                raise ValueError(f"invalid policy_probs (len={int(p.shape[0])}) in {path}")
+            if float(np.sum(p)) <= 0.0:
+                raise ValueError(f"invalid policy_probs (sum=0) in {path}")
+            ps.append(p)
             vs.append(values[i])
 
         if not xs:
             return (
                 np.empty((0, IN_CHANNELS, HEIGHT, WIDTH), dtype=np.float32),
-                np.empty((0,), dtype=np.int64),
+                np.empty((0, n_moves), dtype=np.float32),
                 np.empty((0,), dtype=np.float32),
             )
         return (
             np.stack(xs, axis=0),
-            np.asarray(ps, dtype=np.int64),
+            np.stack(ps, axis=0).astype(np.float32, copy=False),
             np.asarray(vs, dtype=np.float32),
         )
     except (OSError, ValueError, pl.exceptions.PolarsError):
         # Legacy format: x tensor bytes (optionally with x_c/x_h/x_w).
         try:
-            df = pl.read_parquet(path, columns=["x", "policy", "value", "x_c", "x_h", "x_w"])
+            # Materialized training shards (archive2train) store policy dist as scalar columns.
+            df = pl.read_parquet(path, columns=["x", "value", "x_c", "x_h", "x_w", "policy_p0", "policy_p1", "policy_p2", "policy_p3"])
             c = int(df.get_column("x_c")[0]) if df.height > 0 else IN_CHANNELS
             h = int(df.get_column("x_h")[0]) if df.height > 0 else HEIGHT
             w = int(df.get_column("x_w")[0]) if df.height > 0 else WIDTH
         except (OSError, ValueError, pl.exceptions.PolarsError):
-            df = pl.read_parquet(path, columns=["x", "policy", "value"])
+            df = pl.read_parquet(path, columns=["x", "value", "policy_p0", "policy_p1", "policy_p2", "policy_p3"])
             c, h, w = IN_CHANNELS, HEIGHT, WIDTH
 
         states, valid_mask = _decode_states(df.get_column("x"), c=c, h=h, w=w)
         if states.shape[0] == 0:
             return (
                 np.empty((0, int(c), int(h), int(w)), dtype=np.float32),
-                np.empty((0,), dtype=np.int64),
+                np.empty((0, n_moves), dtype=np.float32),
                 np.empty((0,), dtype=np.float32),
             )
 
-        policies = df.get_column("policy").to_numpy()
-        values = df.get_column("value").to_numpy()
+        probs = decode_policy_probs_from_scalar_cols(df)[valid_mask]
+        sums = probs.sum(axis=1)
+        if np.any(sums <= 0):
+            raise ValueError(f"invalid policy_probs (sum=0) in {path}")
 
-        policies = policies[valid_mask].astype(np.int64, copy=False)
-        values = values[valid_mask].astype(np.float32, copy=False)
+        values = df.get_column("value").to_numpy()[valid_mask].astype(np.float32, copy=False)
 
-        n = min(states.shape[0], policies.shape[0], values.shape[0])
-        return states[:n], policies[:n], values[:n]
+        n = min(states.shape[0], probs.shape[0], values.shape[0])
+        return states[:n], probs[:n], values[:n]
 
 
 class StreamingParquetDataset(torch.utils.data.IterableDataset):
@@ -187,7 +223,7 @@ class StreamingParquetDataset(torch.utils.data.IterableDataset):
                     return
                 yield (
                     torch.from_numpy(states[i]),
-                    int(policies[i]),
+                    torch.from_numpy(policies[i]).to(dtype=torch.float32),
                     float(values[i]),
                 )
                 emitted += 1
@@ -237,7 +273,7 @@ def load_preloaded_dataset(file_paths: list[str], *, max_examples: int | None = 
     if total == 0:
         return TensorDataset(
             torch.empty((0, IN_CHANNELS, HEIGHT, WIDTH), dtype=torch.float32),
-            torch.empty((0,), dtype=torch.long),
+            torch.empty((0, 4), dtype=torch.float32),
             torch.empty((0,), dtype=torch.float32),
         )
 
@@ -247,7 +283,7 @@ def load_preloaded_dataset(file_paths: list[str], *, max_examples: int | None = 
 
     return TensorDataset(
         torch.from_numpy(states_all),
-        torch.from_numpy(policies_all).to(torch.long),
+        torch.from_numpy(policies_all).to(torch.float32),
         torch.from_numpy(values_all).to(torch.float32),
     )
 

@@ -44,12 +44,13 @@ type Point struct {
 }
 
 type Snake struct {
-	ID     string  `json:"id"`
-	Alive  bool    `json:"alive"`
-	Health int32   `json:"health"`
-	Body   []Point `json:"body"`
-	Policy int32   `json:"policy"`
-	Value  float32 `json:"value"`
+	ID          string    `json:"id"`
+	Alive       bool      `json:"alive"`
+	Health      int32     `json:"health"`
+	Body        []Point   `json:"body"`
+	Policy      int32     `json:"policy"`
+	PolicyProbs []float32 `json:"policy_probs,omitempty"`
+	Value       float32   `json:"value"`
 }
 
 type Turn struct {
@@ -334,6 +335,7 @@ func openDuckDB(parquetFiles []string) (*sql.DB, error) {
 						body_x INTEGER[],
 						body_y INTEGER[],
 						policy INTEGER,
+						policy_probs REAL[],
 						value REAL
 					)[] AS snakes,
 					NULL::VARCHAR AS filename,
@@ -600,6 +602,30 @@ func asFloat32(v any) float32 {
 	}
 }
 
+func asFloat32Slice(v any) []float32 {
+	if v == nil {
+		return nil
+	}
+	switch vv := v.(type) {
+	case []float32:
+		return vv
+	case []float64:
+		out := make([]float32, 0, len(vv))
+		for _, x := range vv {
+			out = append(out, float32(x))
+		}
+		return out
+	case []any:
+		out := make([]float32, 0, len(vv))
+		for _, x := range vv {
+			out = append(out, asFloat32(x))
+		}
+		return out
+	default:
+		return nil
+	}
+}
+
 func asBool(v any) bool {
 	switch t := v.(type) {
 	case bool:
@@ -657,12 +683,13 @@ func asSnakes(v any) []Snake {
 		bodyX := asInt32Slice(m["body_x"])
 		bodyY := asInt32Slice(m["body_y"])
 		s := Snake{
-			ID:     asString(m["id"]),
-			Alive:  asBool(m["alive"]),
-			Health: int32(asInt64(m["health"])),
-			Policy: int32(asInt64(m["policy"])),
-			Value:  asFloat32(m["value"]),
-			Body:   zipPoints(bodyX, bodyY),
+			ID:          asString(m["id"]),
+			Alive:       asBool(m["alive"]),
+			Health:      int32(asInt64(m["health"])),
+			Policy:      int32(asInt64(m["policy"])),
+			PolicyProbs: asFloat32Slice(m["policy_probs"]),
+			Value:       asFloat32(m["value"]),
+			Body:        zipPoints(bodyX, bodyY),
 		}
 		snakes = append(snakes, s)
 	}

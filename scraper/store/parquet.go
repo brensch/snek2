@@ -88,8 +88,11 @@ type ArchiveSnake struct {
 	BodyX []int32 `parquet:"body_x"`
 	BodyY []int32 `parquet:"body_y"`
 
-	Policy int32   `parquet:"policy"`
-	Value  float32 `parquet:"value"`
+	Policy int32 `parquet:"policy"`
+	// PolicyProbs is an optional distribution target over actions.
+	// For self-play games, this is typically the normalized MCTS visit counts.
+	PolicyProbs []float32 `parquet:"policy_probs"`
+	Value       float32   `parquet:"value"`
 }
 
 func WriteArchiveParquet(outPath string, rows []ArchiveTurnRow) error {

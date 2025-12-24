@@ -23,6 +23,7 @@ export type Snake = {
   health: number
   body: Point[]
   policy: number
+  policy_probs?: number[]
   value: number
 }
 

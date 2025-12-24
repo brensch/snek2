@@ -24,8 +24,14 @@ type TrainingXRow struct {
 
 	X []byte `parquet:"x"`
 
-	Policy int32   `parquet:"policy"`
-	Value  float32 `parquet:"value"`
+	Policy int32 `parquet:"policy"`
+	// Store policy distribution as scalar columns (p0..p3) for better
+	// cross-library Parquet compatibility (some readers struggle with LIST<FLOAT>).
+	PolicyP0 float32 `parquet:"policy_p0"`
+	PolicyP1 float32 `parquet:"policy_p1"`
+	PolicyP2 float32 `parquet:"policy_p2"`
+	PolicyP3 float32 `parquet:"policy_p3"`
+	Value    float32 `parquet:"value"`
 
 	XC int32 `parquet:"x_c"`
 	XH int32 `parquet:"x_h"`
@@ -134,7 +140,7 @@ func convertOne(inPath string, outPath string) (int, error) {
 		outF,
 		parquet.Compression(&zstd.Codec{Level: zstd.SpeedBetterCompression}),
 	)
-	writer.SetKeyValueMetadata("schema", "training_x_row_v1")
+	writer.SetKeyValueMetadata("schema", "training_x_row_v2")
 
 	defer func() {
 		_ = writer.Close()
@@ -200,17 +206,25 @@ func convertOne(inPath string, outPath string) (int, error) {
 					copy(x, *bPtr)
 					convert.PutBuffer(bPtr)
 
+					if len(ego.PolicyProbs) != 4 {
+						return 0, fmt.Errorf("invalid policy_probs (len=%d) for game=%s turn=%d ego=%s source=%s file=%s", len(ego.PolicyProbs), row.GameID, row.Turn, ego.ID, row.Source, inPath)
+					}
+
 					outBuf = append(outBuf, TrainingXRow{
-						GameID: row.GameID,
-						Turn:   row.Turn,
-						EgoID:  ego.ID,
-						X:      x,
-						Policy: ego.Policy,
-						Value:  ego.Value,
-						XC:     int32(convert.Channels),
-						XH:     int32(convert.Height),
-						XW:     int32(convert.Width),
-						Source: row.Source,
+						GameID:   row.GameID,
+						Turn:     row.Turn,
+						EgoID:    ego.ID,
+						X:        x,
+						Policy:   ego.Policy,
+						PolicyP0: ego.PolicyProbs[0],
+						PolicyP1: ego.PolicyProbs[1],
+						PolicyP2: ego.PolicyProbs[2],
+						PolicyP3: ego.PolicyProbs[3],
+						Value:    ego.Value,
+						XC:       int32(convert.Channels),
+						XH:       int32(convert.Height),
+						XW:       int32(convert.Width),
+						Source:   row.Source,
 					})
 
 					if len(outBuf) >= 2048 {

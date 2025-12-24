@@ -250,6 +250,7 @@ func BuildArchiveTurns(gameID string, frames []FrameData) []store.ArchiveTurnRow
 			alive := s.Death == nil && s.Health > 0 && len(s.Body) > 0
 
 			policy := int32(-1)
+			var policyProbs []float32
 			if alive {
 				nh, ok := nextHead[s.ID]
 				if ok {
@@ -268,6 +269,10 @@ func BuildArchiveTurns(gameID string, frames []FrameData) []store.ArchiveTurnRow
 					}
 				}
 			}
+			if policy >= 0 && policy < 4 {
+				policyProbs = make([]float32, 4)
+				policyProbs[policy] = 1.0
+			}
 
 			value := float32(0)
 			if v, ok := outcomes[s.ID]; ok {
@@ -275,11 +280,12 @@ func BuildArchiveTurns(gameID string, frames []FrameData) []store.ArchiveTurnRow
 			}
 
 			snakeRow := store.ArchiveSnake{
-				ID:     s.ID,
-				Alive:  alive,
-				Health: int32(s.Health),
-				Policy: policy,
-				Value:  value,
+				ID:          s.ID,
+				Alive:       alive,
+				Health:      int32(s.Health),
+				Policy:      policy,
+				PolicyProbs: policyProbs,
+				Value:       value,
 			}
 			if len(s.Body) > 0 {
 				snakeRow.BodyX = make([]int32, 0, len(s.Body))

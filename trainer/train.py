@@ -137,12 +137,35 @@ def _unique_dest_path(dest: Path) -> Path:
 
 
 def _move_to_processed(root_dir: Path, files: Iterable[str]) -> int:
-    processed_dir = root_dir / "processed"
+    # Prefer the repo-level processed/{scraped|generated} layout so the viewer and
+    # other tooling have a single canonical archive location.
+    #
+    # Older behavior archived to <root>/processed, which created paths like
+    # data/scraped/processed. That makes it easy to accidentally treat archived
+    # shards as still “active”.
+    processed_dir: Path
+    root_parts = tuple(root_dir.parts)
+    if len(root_parts) >= 2 and root_parts[-2:] == ("data", "scraped"):
+        processed_dir = Path("processed") / "scraped"
+    elif len(root_parts) >= 2 and root_parts[-2:] == ("data", "generated"):
+        processed_dir = Path("processed") / "generated"
+    else:
+        processed_dir = root_dir / "processed"
+
     processed_dir.mkdir(parents=True, exist_ok=True)
 
     moved = 0
     for f in files:
         src = Path(f)
+
+        # Avoid moving symlinks (e.g., orchestrator builds a per-cycle training set
+        # via symlinks). We only want to archive the real shards.
+        try:
+            if src.is_symlink():
+                continue
+        except OSError:
+            continue
+
         try:
             rel = src.relative_to(root_dir)
         except ValueError:
@@ -154,6 +177,7 @@ def _move_to_processed(root_dir: Path, files: Iterable[str]) -> int:
         if "processed" in parts or "tmp" in parts or "materialized" in parts:
             continue
 
+        # Keep the same relative layout when archiving from a canonical root.
         dest = processed_dir / rel
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest = _unique_dest_path(dest)

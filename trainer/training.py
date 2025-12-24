@@ -7,6 +7,7 @@ from typing import Iterable
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.nn.functional as F
 
 from model import EgoSnakeNet
 from constants import HEIGHT, IN_CHANNELS, WIDTH
@@ -76,14 +77,31 @@ def train_epochs(
 
         for states, policies, values in loader:
             states = states.to(device, non_blocking=True)
-            policies = policies.to(device, non_blocking=True, dtype=torch.long)
+            # policies can be either:
+            # - LongTensor[B] class indices (legacy)
+            # - FloatTensor[B,4] probability distributions (preferred)
+            policies = policies.to(device, non_blocking=True)
             values = values.to(device, non_blocking=True, dtype=torch.float32)
 
             optimizer.zero_grad(set_to_none=True)
 
             with torch.amp.autocast(device_type=device.type, dtype=torch.bfloat16, enabled=(device.type == "cuda" and amp)):
                 pred_policies, pred_values = model(states)
-                loss_policy = ce_loss(pred_policies, policies)
+                if policies.dtype in (torch.int64, torch.int32, torch.int16, torch.int8):
+                    loss_policy = ce_loss(pred_policies, policies.to(dtype=torch.long))
+                else:
+                    # Soft cross-entropy: -sum(p * log_softmax(logits)).
+                    target = policies.to(dtype=torch.float32)
+                    if target.ndim == 1:
+                        # Defensive: if a caller passes floats as class ids.
+                        target = target.to(dtype=torch.long)
+                        loss_policy = ce_loss(pred_policies, target)
+                    else:
+                        # Normalize in case of slight drift.
+                        denom = target.sum(dim=1, keepdim=True).clamp_min(1e-8)
+                        target = target / denom
+                        logp = F.log_softmax(pred_policies.float(), dim=1)
+                        loss_policy = -(target * logp).sum(dim=1).mean()
                 loss_value = mse_loss(pred_values.squeeze(1).float(), values.float())
                 loss = loss_policy + loss_value
 
