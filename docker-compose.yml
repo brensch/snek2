@@ -1,27 +1,13 @@
 version: '3.8'
 
 services:
-  fix-perms:
-    image: debian:bookworm-slim
-    container_name: snek2-fix-perms
-    user: "0:0"
-    working_dir: /workspace
-    volumes:
-      - ./:/workspace
-    entrypoint: ["/bin/sh", "-lc"]
-    command: >
-      "set -e; \
-       echo 'Fixing ownership under /workspace (UID=${UID:-1000} GID=${GID:-1000})'; \
-       chown -R ${UID:-1000}:${GID:-1000} /workspace/data /workspace/models /workspace/scraper-data || true; \
-       echo 'Done.'"
-
   scraper:
     build:
       context: .
       dockerfile: scraper/Dockerfile
     container_name: battlesnake-scraper
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "${SNEK2_UID:?Set SNEK2_UID}:${SNEK2_GID:?Set SNEK2_GID}"
     environment:
       WRITTEN_LOG: /data/written_games.log
       OUT_DIR: /output
@@ -40,7 +26,7 @@ services:
       dockerfile: infrastructure/pipeline/Dockerfile
     container_name: snek2-orchestrator
     restart: unless-stopped
-    user: "${UID:-1000}:${GID:-1000}"
+    user: "${SNEK2_UID:?Set SNEK2_UID}:${SNEK2_GID:?Set SNEK2_GID}"
     depends_on:
       - scraper
     working_dir: /workspace
@@ -53,12 +39,15 @@ services:
       HISTORY_DIR: models/history
 
       # Selfplay (generation)
-      GENERATE_GAMES: ${GENERATE_GAMES:-128}
-      WORKERS: ${WORKERS:-128}
-      GAMES_PER_FLUSH: ${GAMES_PER_FLUSH:-64}
+      # Match Makefile defaults as closely as possible.
+      # (Makefile: WORKERS=512, GAMES_PER_FLUSH=50, MAX_GAMES=0, TRACE=true)
+      GENERATE_GAMES: ${GENERATE_GAMES:-0}
+      WORKERS: ${WORKERS:-512}
+      GAMES_PER_FLUSH: ${GAMES_PER_FLUSH:-50}
       ONNX_SESSIONS: ${ONNX_SESSIONS:-1}
-      ONNX_BATCH_SIZE: ${ONNX_BATCH_SIZE:-0}
-      ONNX_BATCH_TIMEOUT: ${ONNX_BATCH_TIMEOUT:-2ms}
+      ONNX_BATCH_SIZE: ${ONNX_BATCH_SIZE:-512}
+      ONNX_BATCH_TIMEOUT: ${ONNX_BATCH_TIMEOUT:-5ms}
+      TRACE: ${TRACE:-true}
 
       # ORT: default to CPU inside Docker unless you provide CUDA libs.
       SNEK2_ORT_DISABLE_CUDA: ${SNEK2_ORT_DISABLE_CUDA:-0}

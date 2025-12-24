@@ -23,8 +23,15 @@ def setup_device() -> torch.device:
     return device
 
 
-def load_model(model_path: str, device: torch.device) -> EgoSnakeNet:
-    model = EgoSnakeNet(width=WIDTH, height=HEIGHT, in_channels=IN_CHANNELS).to(device)
+def load_model(
+    model_path: str,
+    device: torch.device,
+    *,
+    width: int = WIDTH,
+    height: int = HEIGHT,
+    in_channels: int = IN_CHANNELS,
+) -> EgoSnakeNet:
+    model = EgoSnakeNet(width=int(width), height=int(height), in_channels=int(in_channels)).to(device)
 
     if os.path.exists(model_path):
         print(f"Loading checkpoint: {model_path}")
@@ -65,6 +72,7 @@ def train_epochs(
         total_loss = 0.0
         total_batches = 0
         t0 = time.time()
+        last_log_t = t0
 
         for states, policies, values in loader:
             states = states.to(device, non_blocking=True)
@@ -89,6 +97,13 @@ def train_epochs(
 
             total_loss += float(loss.item())
             total_batches += 1
+
+            now = time.time()
+            if total_batches == 1 or (now - last_log_t) >= 30.0:
+                dt = max(1e-9, now - t0)
+                avg = total_loss / max(1, total_batches)
+                print(f"Epoch {epoch+1}/{epochs}: {total_batches} batches, avg_loss {avg:.4f} ({total_batches / dt:.2f} batches/s)")
+                last_log_t = now
 
         if total_batches == 0:
             print(f"Epoch {epoch+1}/{epochs}: no data")

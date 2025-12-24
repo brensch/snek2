@@ -136,7 +136,7 @@ func runLoop(written *store.WrittenLog, outDir string, requestDelay time.Duratio
 
 	batchWriter, err := store.NewArchiveBatchWriter(outDir)
 	if err != nil {
-		slog.Error("failed to create batch writer", "error", err)
+		slog.Error("failed to create batch writer", "error", err.Error())
 		os.Exit(1)
 	}
 	slog.Info("opened batch file", "tmp_path", batchWriter.TmpPath())
@@ -172,7 +172,7 @@ func runLoop(written *store.WrittenLog, outDir string, requestDelay time.Duratio
 			if reason != "signal" && reason != "final" {
 				bw, err := store.NewArchiveBatchWriter(outDir)
 				if err != nil {
-					slog.Error("failed to create batch writer", "error", err)
+					slog.Error("failed to create batch writer", "error", err.Error())
 					os.Exit(1)
 				}
 				batchWriter = bw
@@ -201,7 +201,7 @@ func runLoop(written *store.WrittenLog, outDir string, requestDelay time.Duratio
 		if reason != "signal" && reason != "final" {
 			bw, err := store.NewArchiveBatchWriter(outDir)
 			if err != nil {
-				slog.Error("failed to create batch writer", "error", err)
+				slog.Error("failed to create batch writer", "error", err.Error())
 				os.Exit(1)
 			}
 			batchWriter = bw

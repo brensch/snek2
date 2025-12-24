@@ -1,4 +1,5 @@
 import argparse
+import datetime as _dt
 import random
 import subprocess
 import shutil
@@ -10,7 +11,7 @@ import numpy as np
 import polars as pl
 import torch
 
-from constants import DATA_DIR, DEFAULT_BATCH_SIZE, DEFAULT_EPOCHS, DEFAULT_LR, MODEL_PATH
+from constants import DATA_DIR, DEFAULT_BATCH_SIZE, DEFAULT_EPOCHS, DEFAULT_LR, HEIGHT, IN_CHANNELS, WIDTH, MODEL_PATH
 from parquet_data import LoaderConfig, build_dataloader, list_parquet_files
 from training import load_model, save_checkpoint, setup_device, train_epochs
 
@@ -18,12 +19,108 @@ from training import load_model, save_checkpoint, setup_device, train_epochs
 def _looks_like_archive_parquet(path: str) -> bool:
     try:
         schema = pl.read_parquet_schema(path)
-    except Exception:
+    except (OSError, ValueError, pl.exceptions.PolarsError):
         return False
 
     cols = set(schema.keys())
     # archive_turn_v1 should have a nested `snakes` column (and food/hazard arrays).
     return "snakes" in cols or "food_x" in cols or "hazard_x" in cols
+
+
+def _infer_training_x_shape_from_file(path: str) -> tuple[int, int, int] | None:
+    """Infer (c,h,w) for tensor-byte parquet formats.
+
+    Returns None for formats that are not tensor-byte shards (e.g. raw state JSON, archive).
+    """
+
+    try:
+        schema = pl.read_parquet_schema(path)
+    except (OSError, ValueError, pl.exceptions.PolarsError):
+        return None
+
+    cols = set(schema.keys())
+    if "x" not in cols:
+        return None
+
+    # Newer tensor-byte format includes explicit x_c/x_h/x_w.
+    if {"x_c", "x_h", "x_w"}.issubset(cols):
+        try:
+            df = pl.read_parquet(path, columns=["x_c", "x_h", "x_w"], n_rows=1)
+        except (OSError, ValueError, pl.exceptions.PolarsError):
+            return None
+        if df.height == 0:
+            return None
+        return int(df.get_column("x_c")[0]), int(df.get_column("x_h")[0]), int(df.get_column("x_w")[0])
+
+    # Older tensor-byte format uses width/height columns.
+    if {"width", "height"}.issubset(cols):
+        try:
+            df = pl.read_parquet(path, columns=["x", "width", "height"], n_rows=1)
+        except (OSError, ValueError, pl.exceptions.PolarsError):
+            return None
+        if df.height == 0:
+            return None
+
+        w = int(df.get_column("width")[0])
+        h = int(df.get_column("height")[0])
+        if w <= 0 or h <= 0:
+            return None
+
+        xb = df.get_column("x")[0]
+        if isinstance(xb, memoryview):
+            xb = xb.tobytes()
+        if not isinstance(xb, (bytes, bytearray)):
+            return None
+        if len(xb) % 4 != 0:
+            return None
+        cells = w * h
+        floats = len(xb) // 4
+        if cells <= 0 or floats % cells != 0:
+            return None
+        c = floats // cells
+        return int(c), int(h), int(w)
+
+    # Fallback assumes standard board size.
+    try:
+        df = pl.read_parquet(path, columns=["x"], n_rows=1)
+    except (OSError, ValueError, pl.exceptions.PolarsError):
+        return None
+    if df.height == 0:
+        return None
+    xb = df.get_column("x")[0]
+    if isinstance(xb, memoryview):
+        xb = xb.tobytes()
+    if not isinstance(xb, (bytes, bytearray)):
+        return None
+    if len(xb) % 4 != 0:
+        return None
+    cells = int(WIDTH) * int(HEIGHT)
+    floats = len(xb) // 4
+    if cells <= 0 or floats % cells != 0:
+        return None
+    c = floats // cells
+    return int(c), int(HEIGHT), int(WIDTH)
+
+
+def _infer_training_x_shape(file_paths: list[str]) -> tuple[int, int, int] | None:
+    """Infer a single consistent (c,h,w) across tensor-byte shards.
+
+    If tensor-byte shards with multiple shapes are found, raises a ValueError.
+    """
+
+    inferred: tuple[int, int, int] | None = None
+    for path in file_paths:
+        if _looks_like_archive_parquet(path):
+            continue
+        shp = _infer_training_x_shape_from_file(path)
+        if shp is None:
+            # Likely raw-state JSON (state/policy/value).
+            continue
+        if inferred is None:
+            inferred = shp
+        elif inferred != shp:
+            raise ValueError(f"mixed tensor shapes detected: {inferred} vs {shp} (e.g. in {path})")
+    return inferred
 
 
 def _unique_dest_path(dest: Path) -> Path:
@@ -191,28 +288,25 @@ def _materialize_archive_if_needed(root: Path, files: list[str]) -> tuple[list[s
 def main() -> int:
     args = parse_args()
 
+    # Avoid CUDA + DataLoader fork deadlocks/hangs.
+    # When CUDA is initialized in the parent process, forking worker processes can
+    # hang while fetching the first batch. Using 'spawn' starts clean worker
+    # processes and is the recommended mode for CUDA workloads.
+    if int(args.num_workers) > 0:
+        try:
+            import torch.multiprocessing as mp
+
+            mp.set_start_method("spawn", force=True)
+        except RuntimeError:
+            # Start method was already set.
+            pass
+
     random.seed(int(args.seed))
     np.random.seed(int(args.seed))
     torch.manual_seed(int(args.seed))
 
     device = setup_device()
     print(f"Training on {device}")
-
-    model_path = Path(args.model_path)
-    if not model_path.exists():
-        model_path.parent.mkdir(parents=True, exist_ok=True)
-        print(f"Checkpoint not found; initializing: {model_path}")
-        subprocess.run(
-            [
-                sys.executable,
-                "trainer/init_ckpt.py",
-                "--out",
-                str(model_path),
-                "--in-channels",
-                "10",
-            ],
-            check=True,
-        )
 
     # Determine which roots to train on.
     roots = _default_data_roots(args.data_dir)
@@ -239,6 +333,46 @@ def main() -> int:
 
     print(f"Found {len(train_files)} parquet shards")
 
+    # Infer tensor shape early so checkpoint + model match the data.
+    try:
+        inferred_shape = _infer_training_x_shape(train_files)
+    except ValueError as e:
+        print(f"Error: {e}")
+        print("Tip: avoid mixing old 14-channel shards with current 10-channel data in the same run")
+        return 2
+
+    data_c = int(IN_CHANNELS)
+    data_h = int(HEIGHT)
+    data_w = int(WIDTH)
+    if inferred_shape is not None:
+        data_c, data_h, data_w = map(int, inferred_shape)
+
+    if data_h != int(HEIGHT) or data_w != int(WIDTH):
+        print(f"Error: dataset board size {data_h}x{data_w} does not match model {HEIGHT}x{WIDTH}")
+        return 2
+
+    if data_c != int(IN_CHANNELS):
+        print(
+            f"Warning: dataset has {data_c} input channels but IN_CHANNELS={IN_CHANNELS}. "
+            "Trainer will build a model that matches the dataset."
+        )
+
+    model_path = Path(args.model_path)
+    if not model_path.exists():
+        model_path.parent.mkdir(parents=True, exist_ok=True)
+        print(f"Checkpoint not found; initializing: {model_path}")
+        subprocess.run(
+            [
+                sys.executable,
+                "trainer/init_ckpt.py",
+                "--out",
+                str(model_path),
+                "--in-channels",
+                str(int(data_c)),
+            ],
+            check=True,
+        )
+
     max_examples = None if int(args.max_examples) <= 0 else int(args.max_examples)
     pin_memory = device.type == "cuda"
 
@@ -257,7 +391,7 @@ def main() -> int:
         stream=stream,
     )
 
-    model = load_model(str(args.model_path), device)
+    model = load_model(str(args.model_path), device, width=int(WIDTH), height=int(HEIGHT), in_channels=int(data_c))
     ok = train_epochs(
         model=model,
         loader=loader,
@@ -273,6 +407,20 @@ def main() -> int:
         return 2
 
     save_checkpoint(model, str(args.model_path))
+
+    # If training is writing to the mutable "models/latest.pt", also archive a
+    # timestamped copy into "models/history" for easier manual workflows.
+    try:
+        mp = Path(args.model_path)
+        if mp.name == "latest.pt" and mp.parent.name == "models":
+            history_dir = mp.parent / "history"
+            history_dir.mkdir(parents=True, exist_ok=True)
+            ts = _dt.datetime.now(_dt.UTC).strftime("%Y%m%d_%H%M%S")
+            hist_path = history_dir / f"model_{ts}.pt"
+            shutil.copy2(str(mp), str(hist_path))
+            print(f"Archived checkpoint to {hist_path}")
+    except OSError as e:
+        print(f"Warning: failed to archive checkpoint history: {e}")
 
     # Mark consumed inputs as processed after a successful save.
     total_moved = 0

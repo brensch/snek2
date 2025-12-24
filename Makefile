@@ -114,6 +114,11 @@ docker-scraper-stop:
 
 # Or use docker-compose
 docker-scraper-up:
+	./scripts/docker-bootstrap.sh
+	docker compose up -d --build
+
+docker-up:
+	./scripts/docker-bootstrap.sh
 	docker compose up -d --build
 
 docker-scraper-down:

@@ -11,13 +11,14 @@ set -euo pipefail
 : "${HISTORY_DIR:=${MODEL_DIR}/history}"
 : "${WORKSPACE_DIR:=$(pwd)}"       # repo root; /workspace in container
 
-: "${GENERATE_GAMES:=128}"        # per cycle
-: "${WORKERS:=128}"
-: "${GAMES_PER_FLUSH:=64}"
+: "${GENERATE_GAMES:=0}"        # per cycle (0 = executor default; matches Makefile MAX_GAMES=0)
+: "${WORKERS:=512}"
+: "${GAMES_PER_FLUSH:=50}"
 : "${MCTS_SIMS:=800}"
 : "${ONNX_SESSIONS:=1}"
-: "${ONNX_BATCH_SIZE:=0}"        # 0 = executor default
-: "${ONNX_BATCH_TIMEOUT:=2ms}"
+: "${ONNX_BATCH_SIZE:=512}"
+: "${ONNX_BATCH_TIMEOUT:=5ms}"
+: "${TRACE:=true}"
 
 : "${TRAIN_EPOCHS:=10}"
 : "${TRAIN_BATCH_SIZE:=256}"
@@ -103,6 +104,7 @@ while true; do
     -out-dir "${GENERATED_DIR}"
     -workers "${WORKERS}"
     -games-per-flush "${GAMES_PER_FLUSH}"
+    -trace="${TRACE}"
     -mcts-sims "${MCTS_SIMS}"
     -onnx-sessions "${ONNX_SESSIONS}"
     -onnx-batch-timeout "${ONNX_BATCH_TIMEOUT}"
