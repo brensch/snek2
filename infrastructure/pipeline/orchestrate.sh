@@ -11,7 +11,7 @@ set -euo pipefail
 : "${HISTORY_DIR:=${MODEL_DIR}/history}"
 : "${WORKSPACE_DIR:=$(pwd)}"       # repo root; /workspace in container
 
-: "${GENERATE_GAMES:=0}"        # per cycle (0 = executor default; matches Makefile MAX_GAMES=0)
+: "${GENERATE_GAMES:=256}"        # per cycle
 : "${WORKERS:=512}"
 : "${GAMES_PER_FLUSH:=50}"
 : "${MCTS_SIMS:=800}"
@@ -28,6 +28,22 @@ set -euo pipefail
 : "${MIN_FILE_AGE_SECONDS:=0}"   # 0 disables age gating (writers use atomic tmp+rename)
 : "${ARCHIVE_EXISTING_ON_START:=1}"  # move existing shards to processed/* before first cycle
 : "${MAX_CYCLES:=0}"             # 0 = infinite
+
+# Python interpreter to use for training/export utilities.
+# Prefer local repo venv when running on-host.
+: "${PYTHON_BIN:=}"
+if [[ -z "${PYTHON_BIN}" ]]; then
+  if [[ -x "${WORKSPACE_DIR}/.venv/bin/python" ]]; then
+    PYTHON_BIN="${WORKSPACE_DIR}/.venv/bin/python"
+  elif command -v python3 >/dev/null 2>&1; then
+    PYTHON_BIN="python3"
+  elif command -v python >/dev/null 2>&1; then
+    PYTHON_BIN="python"
+  else
+    echo "[startup] error: python not found (set PYTHON_BIN or install python3)" >&2
+    exit 1
+  fi
+fi
 
 # If running as a non-root user in a container, ensure we have a writable HOME/cache.
 # Some environments set HOME=/, which is not writable.
@@ -47,11 +63,11 @@ mkdir -p "${GENERATED_DIR}" "${SCRAPED_DIR}" "${PROCESSED_DIR}/generated" "${PRO
 # Ensure we have a model and ONNX before starting cycle 1.
 if [[ ! -f "${MODEL_DIR}/latest.pt" ]]; then
   echo "[startup] missing ${MODEL_DIR}/latest.pt; initializing"
-  python3 trainer/init_ckpt.py --out "${MODEL_DIR}/latest.pt" --in-channels 10
+  "${PYTHON_BIN}" trainer/init_ckpt.py --out "${MODEL_DIR}/latest.pt" --in-channels 10
 fi
 if [[ ! -f "${MODEL_DIR}/snake_net.onnx" ]]; then
   echo "[startup] missing ${MODEL_DIR}/snake_net.onnx; exporting from latest.pt"
-  python3 trainer/export_onnx.py --ckpt "${MODEL_DIR}/latest.pt" --out "${MODEL_DIR}/snake_net.onnx"
+  "${PYTHON_BIN}" trainer/export_onnx.py --ckpt "${MODEL_DIR}/latest.pt" --out "${MODEL_DIR}/snake_net.onnx"
 fi
 
 if [[ "${ARCHIVE_EXISTING_ON_START}" == "1" ]]; then
@@ -154,7 +170,7 @@ while true; do
   done
 
   echo "[cycle ${cycle}] training on ${#gen_files[@]} generated + ${#scr_files[@]} scraped shards (ckpt=${ckpt_path})"
-  python3 trainer/train.py \
+  "${PYTHON_BIN}" trainer/train.py \
     --data-dir "${train_dir}" \
     --model-path "${ckpt_path}" \
     --epochs "${TRAIN_EPOCHS}" \
@@ -162,7 +178,7 @@ while true; do
     --lr "${TRAIN_LR}"
 
   echo "[cycle ${cycle}] exporting onnx (${onnx_path})"
-  python3 trainer/export_onnx.py --ckpt "${ckpt_path}" --out "${onnx_path}"
+  "${PYTHON_BIN}" trainer/export_onnx.py --ckpt "${ckpt_path}" --out "${onnx_path}"
 
   # Archive consumed shards only after a successful train+export.
   for f in "${gen_files[@]}"; do

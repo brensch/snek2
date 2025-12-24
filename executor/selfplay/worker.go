@@ -21,12 +21,69 @@ type GameResult struct {
 	Steps    int
 }
 
-func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, sims int, onStep func()) ([]store.ArchiveTurnRow, GameResult) {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano() + int64(workerId)*1000003))
-	state := createInitialState(rng)
-	gameID := fmt.Sprintf("selfplay_%d_%d", time.Now().UnixNano(), workerId)
+// InProgressGame is a resumable self-play game snapshot.
+//
+// It includes the current game state plus any already-recorded per-turn archive rows.
+// Values are assigned only once the game completes.
+type InProgressGame struct {
+	GameID   string                 `json:"game_id"`
+	State    *game.GameState        `json:"state"`
+	Rows     []store.ArchiveTurnRow `json:"rows"`
+	RNGSeed  int64                  `json:"rng_seed"`
+	PausedAt int32                  `json:"paused_at"`
+}
 
+type PlayGameOutcome struct {
+	Completed  bool
+	Rows       []store.ArchiveTurnRow
+	Result     GameResult
+	Checkpoint *InProgressGame
+}
+
+type PlayGameOptions struct {
+	Resume        *InProgressGame
+	StopRequested func() bool
+}
+
+// PlayGame is the legacy API used by older callers. It will abort and return nil rows
+// if the context is cancelled.
+func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, sims int, onStep func()) ([]store.ArchiveTurnRow, GameResult) {
+	out := PlayGameWithOptions(ctx, workerId, mctsConfig, client, verbose, sims, onStep, PlayGameOptions{})
+	if !out.Completed {
+		return nil, out.Result
+	}
+	return out.Rows, out.Result
+}
+
+func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Config, client mcts.Predictor, verbose bool, sims int, onStep func(), opts PlayGameOptions) PlayGameOutcome {
+	stopRequested := opts.StopRequested
+	if stopRequested == nil {
+		stopRequested = func() bool { return false }
+	}
+
+	var rngSeed int64
+	var state *game.GameState
+	var gameID string
 	rows := make([]store.ArchiveTurnRow, 0, 256)
+
+	if opts.Resume != nil && opts.Resume.State != nil && opts.Resume.GameID != "" {
+		gameID = opts.Resume.GameID
+		state = opts.Resume.State.Clone()
+		rngSeed = opts.Resume.RNGSeed
+		if rngSeed == 0 {
+			rngSeed = time.Now().UnixNano() + int64(workerId)*1000003
+		}
+		if len(opts.Resume.Rows) > 0 {
+			rows = append(rows, opts.Resume.Rows...)
+		}
+	} else {
+		rngSeed = time.Now().UnixNano() + int64(workerId)*1000003
+		rng := rand.New(rand.NewSource(rngSeed))
+		state = createInitialState(rng)
+		gameID = fmt.Sprintf("selfplay_%d_%d", time.Now().UnixNano(), workerId)
+	}
+
+	rng := rand.New(rand.NewSource(rngSeed))
 
 	moveNames := []string{"Up", "Down", "Left", "Right"}
 
@@ -34,8 +91,33 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 		if ctx != nil {
 			select {
 			case <-ctx.Done():
-				return nil, GameResult{WinnerId: "", Steps: int(state.Turn)}
+				// Gracefully checkpoint instead of throwing away the partial game.
+				return PlayGameOutcome{
+					Completed: false,
+					Result:    GameResult{WinnerId: "", Steps: int(state.Turn)},
+					Checkpoint: &InProgressGame{
+						GameID:   gameID,
+						State:    state.Clone(),
+						Rows:     append([]store.ArchiveTurnRow(nil), rows...),
+						RNGSeed:  rng.Int63(),
+						PausedAt: state.Turn,
+					},
+				}
 			default:
+			}
+		}
+
+		if stopRequested() {
+			return PlayGameOutcome{
+				Completed: false,
+				Result:    GameResult{WinnerId: "", Steps: int(state.Turn)},
+				Checkpoint: &InProgressGame{
+					GameID:   gameID,
+					State:    state.Clone(),
+					Rows:     append([]store.ArchiveTurnRow(nil), rows...),
+					RNGSeed:  rng.Int63(),
+					PausedAt: state.Turn,
+				},
 			}
 		}
 
@@ -184,8 +266,31 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 		if ctx != nil {
 			select {
 			case <-ctx.Done():
-				return nil, GameResult{WinnerId: "", Steps: int(state.Turn)}
+				return PlayGameOutcome{
+					Completed: false,
+					Result:    GameResult{WinnerId: "", Steps: int(state.Turn)},
+					Checkpoint: &InProgressGame{
+						GameID:   gameID,
+						State:    state.Clone(),
+						Rows:     append([]store.ArchiveTurnRow(nil), rows...),
+						RNGSeed:  rng.Int63(),
+						PausedAt: state.Turn,
+					},
+				}
 			default:
+			}
+		}
+		if stopRequested() {
+			return PlayGameOutcome{
+				Completed: false,
+				Result:    GameResult{WinnerId: "", Steps: int(state.Turn)},
+				Checkpoint: &InProgressGame{
+					GameID:   gameID,
+					State:    state.Clone(),
+					Rows:     append([]store.ArchiveTurnRow(nil), rows...),
+					RNGSeed:  rng.Int63(),
+					PausedAt: state.Turn,
+				},
 			}
 		}
 
@@ -349,7 +454,7 @@ func PlayGame(ctx context.Context, workerId int, mctsConfig mcts.Config, client 
 		}
 	}
 
-	return rows, GameResult{WinnerId: winnerId, Steps: int(state.Turn)}
+	return PlayGameOutcome{Completed: true, Rows: rows, Result: GameResult{WinnerId: winnerId, Steps: int(state.Turn)}}
 }
 
 func createInitialState(rng *rand.Rand) *game.GameState {

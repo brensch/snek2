@@ -47,3 +47,5 @@ __pycache__/
 *.pt
 *.onnx*
 *.so*
+
+*.claimed

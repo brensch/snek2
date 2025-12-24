@@ -1,12 +1,15 @@
 package main
 
 import (
+	"compress/gzip"
 	"context"
+	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -141,7 +144,8 @@ func main() {
 	outDir := fs.String("out-dir", "data/generated", "Output directory for generated training parquet batches")
 	workers := fs.Int("workers", 128, "Number of self-play workers")
 	gamesPerFlush := fs.Int("games-per-flush", 50, "Number of games to buffer per parquet flush")
-	maxGames := fs.Int64("max-games", 0, "If > 0, stop after generating this many games (across all workers)")
+	maxGames := fs.Int64("max-games", 0, "If > 0, stop after completing this many games (across all workers). In-flight games are checkpointed for resume.")
+	inflightPath := fs.String("inflight-path", "", "Path to checkpoint file for in-flight selfplay games (default: <out-dir>/tmp/inflight_selfplay.json.gz)")
 	_ = runtime.NumCPU() // keep runtime import useful if you later tune defaults
 	onnxSessions := fs.Int("onnx-sessions", 1, "Number of ONNX Runtime sessions to run in parallel (each has its own batching loop). Start with 1; increase if GPU is underutilized.")
 	onnxBatchSize := fs.Int("onnx-batch-size", inference.DefaultBatchSize, "ONNX inference batch size (larger can improve GPU utilization)")
@@ -240,26 +244,50 @@ func main() {
 	updates := make(chan GameUpdate, *workers)
 	writeReqs := make(chan gameWriteRequest, (*workers)*4)
 
-	// If max-games is set, we must prevent more than that many games from
-	// starting concurrently across workers. The previous approach cancelled the
-	// context when the *completed* count reached max-games, which caused many
-	// in-flight games to abort and still be counted. Here we cap the number of
-	// games started and allow in-flight games to finish naturally.
-	var startedGames atomic.Int64
-	acquireGameStartSlot := func() bool {
-		if *maxGames <= 0 {
+	if strings.TrimSpace(*inflightPath) == "" {
+		*inflightPath = filepath.Join(*outDir, "tmp", "inflight_selfplay.json.gz")
+	}
+	claimedPath := *inflightPath + ".claimed"
+
+	// Claim and load any previous in-flight games so we can resume them.
+	// We keep the claimed file around until successful shutdown, so crashes don't lose it.
+	if _, err := os.Stat(*inflightPath); err == nil {
+		_ = os.MkdirAll(filepath.Dir(*inflightPath), 0o755)
+		_ = os.Rename(*inflightPath, claimedPath)
+	}
+
+	resumeGames := make([]selfplay.InProgressGame, 0)
+	if loaded, err := loadInflightGames(claimedPath); err != nil {
+		log.Printf("Failed to load inflight checkpoint %s: %v", claimedPath, err)
+	} else if len(loaded) > 0 {
+		resumeGames = append(resumeGames, loaded...)
+		log.Printf("Loaded %d in-flight games from %s", len(loaded), claimedPath)
+	}
+	if loaded, err := loadInflightGames(*inflightPath); err != nil {
+		log.Printf("Failed to load inflight checkpoint %s: %v", *inflightPath, err)
+	} else if len(loaded) > 0 {
+		resumeGames = append(resumeGames, loaded...)
+		log.Printf("Loaded %d in-flight games from %s", len(loaded), *inflightPath)
+	}
+
+	resumeQueue := make(chan selfplay.InProgressGame, len(resumeGames))
+	for i := range resumeGames {
+		resumeQueue <- resumeGames[i]
+	}
+
+	var completedGames atomic.Int64
+	var stopRequested atomic.Bool
+	shouldStop := func() bool {
+		if stopRequested.Load() {
 			return true
 		}
-		for {
-			cur := startedGames.Load()
-			if cur >= *maxGames {
-				return false
-			}
-			if startedGames.CompareAndSwap(cur, cur+1) {
-				return true
-			}
+		if *maxGames > 0 && completedGames.Load() >= *maxGames {
+			return true
 		}
+		return false
 	}
+
+	inflightCh := make(chan *selfplay.InProgressGame, (*workers)*2)
 
 	writerDone := make(chan struct{})
 	go func() {
@@ -278,35 +306,71 @@ func main() {
 			for {
 				select {
 				case <-ctx.Done():
+					stopRequested.Store(true)
 					return
 				default:
 				}
 
-				if !acquireGameStartSlot() {
+				if shouldStop() {
 					return
 				}
 
-				// Run one game
-				// Disable verbose for TUI
+				// Prefer resuming a previously checkpointed game.
+				var resume *selfplay.InProgressGame
+				select {
+				case g := <-resumeQueue:
+					gg := g
+					resume = &gg
+				default:
+				}
+
+				// Run one game (or checkpoint a resumable chunk)
 				onStep := func() {
 					totalMoves.Add(1)
 				}
-				examples, result := selfplay.PlayGame(ctx, workerId, mcts.Config{Cpuct: 1.0}, c, doTrace, *mctsSims, onStep)
-				total := totalGames.Add(1)
-				log.Printf("finished game number %d", total)
+				out := selfplay.PlayGameWithOptions(
+					ctx,
+					workerId,
+					mcts.Config{Cpuct: 1.0},
+					c,
+					doTrace,
+					*mctsSims,
+					onStep,
+					selfplay.PlayGameOptions{
+						Resume:        resume,
+						StopRequested: func() bool { return shouldStop() },
+					},
+				)
 
-				if len(examples) > 0 {
-					writeReqs <- gameWriteRequest{rows: examples}
-
-					// Avoid blocking shutdown if the UI loop stops consuming.
-					select {
-					case updates <- GameUpdate{WorkerID: workerId, Result: result, Examples: len(examples)}:
-					default:
+				if out.Completed {
+					total := completedGames.Add(1)
+					totalGames.Store(total)
+					log.Printf("finished game number %d", total)
+					if len(out.Rows) > 0 {
+						writeReqs <- gameWriteRequest{rows: out.Rows}
+						select {
+						case updates <- GameUpdate{WorkerID: workerId, Result: out.Result, Examples: len(out.Rows)}:
+						default:
+						}
 					}
-
-				} else {
-					log.Printf("Worker %d: Game Aborted (Error)", workerId)
+					if *maxGames > 0 && total >= *maxGames {
+						stopRequested.Store(true)
+						return
+					}
+					continue
 				}
+
+				if out.Checkpoint != nil {
+					select {
+					case inflightCh <- out.Checkpoint:
+					default:
+						log.Printf("inflight checkpoint channel full; dropping game %s", out.Checkpoint.GameID)
+					}
+					return
+				}
+
+				log.Printf("Worker %d: Game Aborted (Error)", workerId)
+				return
 			}
 		}(i)
 	}
@@ -314,6 +378,7 @@ func main() {
 	workersDone := make(chan struct{})
 	go func() {
 		workerWG.Wait()
+		close(inflightCh)
 		close(workersDone)
 	}()
 
@@ -332,15 +397,29 @@ func main() {
 		case <-ctx.Done():
 			log.Printf("Shutdown requested; waiting for workers to finish current games...")
 			<-workersDone
+			inflight := collectInflight(inflightCh)
+			if err := saveOrClearInflight(*inflightPath, inflight); err != nil {
+				log.Printf("Failed to persist inflight games: %v", err)
+			} else {
+				log.Printf("Persisted %d in-flight games to %s", len(inflight), *inflightPath)
+			}
+			_ = os.Remove(claimedPath)
 			close(writeReqs)
 			<-writerDone
-			log.Printf("Shutdown complete: final parquet flush done (games=%d)", totalGames.Load())
+			log.Printf("Shutdown complete: final parquet flush done (games=%d)", completedGames.Load())
 			return
 		case <-workersDone:
 			// Normal completion (e.g., -max-games reached).
+			inflight := collectInflight(inflightCh)
+			if err := saveOrClearInflight(*inflightPath, inflight); err != nil {
+				log.Printf("Failed to persist inflight games: %v", err)
+			} else {
+				log.Printf("Persisted %d in-flight games to %s", len(inflight), *inflightPath)
+			}
+			_ = os.Remove(claimedPath)
 			close(writeReqs)
 			<-writerDone
-			log.Printf("Shutdown complete: final parquet flush done (games=%d)", totalGames.Load())
+			log.Printf("Shutdown complete: final parquet flush done (games=%d)", completedGames.Load())
 			return
 		case update := <-updates:
 			log.Printf("Worker %d: Winner %s, Steps %d, Ex %d", update.WorkerID, update.Result.WinnerId, update.Result.Steps, update.Examples)
@@ -412,4 +491,83 @@ func maxInt(a, b int) int {
 		return a
 	}
 	return b
+}
+
+type inflightCheckpointFile struct {
+	Version int                       `json:"version"`
+	Games   []selfplay.InProgressGame `json:"games"`
+}
+
+func loadInflightGames(path string) ([]selfplay.InProgressGame, error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, nil
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	defer f.Close()
+
+	gr, err := gzip.NewReader(f)
+	if err != nil {
+		return nil, err
+	}
+	defer gr.Close()
+
+	var ck inflightCheckpointFile
+	if err := json.NewDecoder(gr).Decode(&ck); err != nil {
+		return nil, err
+	}
+	return ck.Games, nil
+}
+
+func saveOrClearInflight(path string, games []selfplay.InProgressGame) error {
+	if strings.TrimSpace(path) == "" {
+		return nil
+	}
+	if len(games) == 0 {
+		_ = os.Remove(path)
+		return nil
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+
+	tmpPath := path + ".tmp"
+	_ = os.Remove(tmpPath)
+	f, err := os.Create(tmpPath)
+	if err != nil {
+		return err
+	}
+
+	gw := gzip.NewWriter(f)
+	enc := json.NewEncoder(gw)
+	enc.SetIndent("", "  ")
+	err = enc.Encode(inflightCheckpointFile{Version: 1, Games: games})
+	_ = gw.Close()
+	_ = f.Close()
+	if err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return err
+	}
+	return nil
+}
+
+func collectInflight(in <-chan *selfplay.InProgressGame) []selfplay.InProgressGame {
+	out := make([]selfplay.InProgressGame, 0)
+	for g := range in {
+		if g == nil || g.State == nil || g.GameID == "" {
+			continue
+		}
+		out = append(out, *g)
+	}
+	return out
 }

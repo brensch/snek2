@@ -60,6 +60,14 @@ export-onnx: $(VENV_DIR)
 	$(PYTHON) trainer/export_onnx.py --in-channels 10 --dtype fp16-f32io --out models/snake_net_fp16_f32io.onnx
 	ln -sf snake_net_fp16_f32io.onnx models/snake_net.onnx
 
+# Export ONNX from a specific checkpoint.
+# Usage: make export-onnx-ckpt CKPT=models/history/model_x.pt OUT=models/history/model_x.onnx
+.PHONY: export-onnx-ckpt
+export-onnx-ckpt: $(VENV_DIR)
+	@test -n "$(CKPT)" || (echo "CKPT is required" && exit 2)
+	@test -n "$(OUT)" || (echo "OUT is required" && exit 2)
+	$(PYTHON) trainer/export_onnx.py --in-channels 10 --dtype fp16-f32io --ckpt "$(CKPT)" --out "$(OUT)"
+
 init-ckpt: $(VENV_DIR)
 	$(PYTHON) trainer/init_ckpt.py --out models/latest.pt --in-channels 10
 
@@ -123,3 +131,8 @@ docker-up:
 
 docker-scraper-down:
 	docker compose down
+
+# Local, non-Docker orchestrator loop (generate -> train -> export -> repeat).
+.PHONY: orchestrate-local
+orchestrate-local:
+	bash infrastructure/pipeline/orchestrate_local.sh

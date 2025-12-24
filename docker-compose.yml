@@ -41,7 +41,7 @@ services:
       # Selfplay (generation)
       # Match Makefile defaults as closely as possible.
       # (Makefile: WORKERS=512, GAMES_PER_FLUSH=50, MAX_GAMES=0, TRACE=true)
-      GENERATE_GAMES: ${GENERATE_GAMES:-0}
+      GENERATE_GAMES: ${GENERATE_GAMES:-256}
       WORKERS: ${WORKERS:-512}
       GAMES_PER_FLUSH: ${GAMES_PER_FLUSH:-50}
       ONNX_SESSIONS: ${ONNX_SESSIONS:-1}
