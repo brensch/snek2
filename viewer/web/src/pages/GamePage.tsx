@@ -1,7 +1,97 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { fetchGameTurns, type Turn } from '../api'
+import { fetchGameTurns, type Snake, type Turn } from '../api'
 import { renderAsciiBoard, snakeLetters } from '../board'
+
+function clamp01(x: number): number {
+  if (!Number.isFinite(x)) return 0
+  if (x < 0) return 0
+  if (x > 1) return 1
+  return x
+}
+
+function policyName(p: number): string {
+  switch (p) {
+    case 0:
+      return 'Up'
+    case 1:
+      return 'Down'
+    case 2:
+      return 'Left'
+    case 3:
+      return 'Right'
+    default:
+      return 'Unknown'
+  }
+}
+
+function policyProbs4(s: Snake): [number, number, number, number] | null {
+  const pp = s.policy_probs
+  if (pp && pp.length === 4 && pp.every((x) => Number.isFinite(x))) {
+    return [pp[0], pp[1], pp[2], pp[3]]
+  }
+  if (Number.isFinite(s.policy) && s.policy >= 0 && s.policy < 4) {
+    const out: [number, number, number, number] = [0, 0, 0, 0]
+    out[s.policy] = 1
+    return out
+  }
+  return null
+}
+
+function PolicyCross({ snake }: { snake: Snake }) {
+  const probs = policyProbs4(snake)
+  const chosen = Number.isFinite(snake.policy) ? snake.policy : -1
+
+  const cell: CSSProperties = {
+    width: 72,
+    height: 44,
+    border: '1px solid #ddd',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'center',
+    fontSize: 12,
+    lineHeight: 1.1,
+  }
+
+  const center: CSSProperties = {
+    ...cell,
+    fontSize: 14,
+    color: '#666',
+  }
+
+  const entry = (dir: 0 | 1 | 2 | 3, label: string) => {
+    const p = probs ? probs[dir] : null
+    const isChosen = chosen === dir
+    return (
+      <div style={{ ...cell, fontWeight: isChosen ? 700 : 400 }}>
+        <div>{isChosen ? `*${label}` : label}</div>
+        <div style={{ color: '#666' }}>{p == null ? '—' : `${Math.round(clamp01(p) * 100)}%`}</div>
+      </div>
+    )
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'grid', gridTemplateColumns: '72px 72px 72px', gap: 6 }}>
+        <div />
+        {entry(0, 'U')}
+        <div />
+
+        {entry(2, 'L')}
+        <div style={center}>•</div>
+        {entry(3, 'R')}
+
+        <div />
+        {entry(1, 'D')}
+        <div />
+      </div>
+      <div style={{ marginTop: 6, fontSize: 12, color: '#666' }}>
+        policy: {snake.policy} ({policyName(snake.policy)})
+      </div>
+    </div>
+  )
+}
 
 export default function GamePage() {
   const { gameId } = useParams()
@@ -122,22 +212,25 @@ export default function GamePage() {
         />
       </div>
 
-      <pre style={{ lineHeight: 1.2, fontSize: 14, padding: 12, border: '1px solid #ddd', overflowX: 'auto' }}>
-        {board}
-      </pre>
+      <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <pre style={{ lineHeight: 1.2, fontSize: 14, padding: 12, border: '1px solid #ddd', overflowX: 'auto', margin: 0 }}>
+          {board}
+        </pre>
 
-      <div style={{ marginTop: 12 }}>
-        <h3 style={{ margin: '8px 0' }}>Snakes</h3>
-        <ul>
+        <div style={{ minWidth: 260 }}>
+          <h3 style={{ margin: '0 0 8px 0' }}>Snakes</h3>
           {current.snakes.map((s, i) => {
             const { head } = snakeLetters(i)
             return (
-              <li key={s.id}>
-                {head} — id: {s.id} — alive: {String(s.alive)} — health: {s.health} — value: {s.value}
-              </li>
+              <div key={s.id} style={{ marginBottom: 16 }}>
+                <div style={{ marginBottom: 6 }}>
+                  <strong>{head}</strong> — id: {s.id} — alive: {String(s.alive)} — health: {s.health} — value: {s.value}
+                </div>
+                <PolicyCross snake={s} />
+              </div>
             )
           })}
-        </ul>
+        </div>
       </div>
     </div>
   )
