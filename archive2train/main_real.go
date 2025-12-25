@@ -206,8 +206,17 @@ func convertOne(inPath string, outPath string) (int, error) {
 					copy(x, *bPtr)
 					convert.PutBuffer(bPtr)
 
-					if len(ego.PolicyProbs) != 4 {
-						return 0, fmt.Errorf("invalid policy_probs (len=%d) for game=%s turn=%d ego=%s source=%s file=%s", len(ego.PolicyProbs), row.GameID, row.Turn, ego.ID, row.Source, inPath)
+
+					policyProbs := ego.PolicyProbs
+					if len(policyProbs) != 4 {
+						// Some older/selfplay archive shards may omit policy_probs.
+						// Fall back to a one-hot distribution derived from the chosen action.
+						p := int(ego.Policy)
+						if p < 0 || p > 3 {
+							return 0, fmt.Errorf("invalid policy (=%d) for game=%s turn=%d ego=%s source=%s file=%s", ego.Policy, row.GameID, row.Turn, ego.ID, row.Source, inPath)
+						}
+						policyProbs = make([]float32, 4)
+						policyProbs[p] = 1.0
 					}
 
 					outBuf = append(outBuf, TrainingXRow{
@@ -216,10 +225,10 @@ func convertOne(inPath string, outPath string) (int, error) {
 						EgoID:    ego.ID,
 						X:        x,
 						Policy:   ego.Policy,
-						PolicyP0: ego.PolicyProbs[0],
-						PolicyP1: ego.PolicyProbs[1],
-						PolicyP2: ego.PolicyProbs[2],
-						PolicyP3: ego.PolicyProbs[3],
+						PolicyP0: policyProbs[0],
+						PolicyP1: policyProbs[1],
+						PolicyP2: policyProbs[2],
+						PolicyP3: policyProbs[3],
 						Value:    ego.Value,
 						XC:       int32(convert.Channels),
 						XH:       int32(convert.Height),

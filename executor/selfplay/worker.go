@@ -408,6 +408,10 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 					policyProbs = append([]float32(nil), p...)
 				}
 			}
+			if policy >= 0 && policy < 4 && len(policyProbs) != 4 {
+				policyProbs = make([]float32, 4)
+				policyProbs[policy] = 1.0
+			}
 			snakeRow := store.ArchiveSnake{
 				ID:          s.Id,
 				Alive:       alive,
