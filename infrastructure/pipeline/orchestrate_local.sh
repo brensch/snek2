@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Local (non-Docker) orchestrator.
-# Runs: generate -> train -> export onnx -> repeat.
+# Runs: train -> export onnx -> generate -> repeat.
 # Uses Makefile targets for the heavy lifting.
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
@@ -24,10 +24,11 @@ cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
 : "${TRAIN_EPOCHS:=10}"
 : "${TRAIN_BATCH_SIZE:=256}"
-: "${TRAIN_LR:=0.01}"
+: "${TRAIN_LR:=0.001}"
 
 : "${ARCHIVE_EXISTING_ON_START:=0}"
 : "${SLEEP_BETWEEN_CYCLES:=0}"
+: "${MAX_CYCLES:=0}"             # 0 = infinite
 
 mkdir -p "${GENERATED_DIR}" "${SCRAPED_DIR}" "${PROCESSED_DIR}/generated" "${PROCESSED_DIR}/scraped" "${HISTORY_DIR}"
 
@@ -60,6 +61,50 @@ while true; do
   ckpt_path="${HISTORY_DIR}/model_${ts}.pt"
   onnx_path="${HISTORY_DIR}/model_${ts}.onnx"
 
+  # Freeze the training set for this cycle (symlinks), so we can archive consumed shards.
+  train_dir="$(pwd)/.train_sets/snek2_train_${ts}"
+  mkdir -p "${train_dir}"
+
+  mapfile -t gen_files < <(find "${GENERATED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" 2>/dev/null | sort)
+  mapfile -t scr_files < <(find "${SCRAPED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" 2>/dev/null | sort)
+
+  if [[ ${#gen_files[@]} -eq 0 && ${#scr_files[@]} -eq 0 ]]; then
+    echo "[cycle ${cycle}] no eligible parquet shards yet; skipping training"
+    rm -rf "${train_dir}" || true
+  else
+    i=0
+    for f in "${gen_files[@]}"; do
+      ln -sf "$(realpath "${f}")" "${train_dir}/generated_${i}.parquet"
+      i=$((i+1))
+    done
+    j=0
+    for f in "${scr_files[@]}"; do
+      ln -sf "$(realpath "${f}")" "${train_dir}/scraped_${j}.parquet"
+      j=$((j+1))
+    done
+
+    echo "[cycle ${cycle}] training on ${#gen_files[@]} generated + ${#scr_files[@]} scraped shards"
+    # trainer/train.py uses --model-path as both input and output.
+    # Seed a new history checkpoint from the current latest model so we don't
+    # re-initialize randomly each cycle.
+    if [[ ! -f "${ckpt_path}" ]]; then
+      cp -f "${MODEL_DIR}/latest.pt" "${ckpt_path}"
+    fi
+    make train ARGS="--data-dir ${train_dir} --model-path ${ckpt_path} --epochs ${TRAIN_EPOCHS} --batch-size ${TRAIN_BATCH_SIZE} --lr ${TRAIN_LR}"
+
+    echo "[cycle ${cycle}] exporting onnx (${onnx_path})"
+    make export-onnx-ckpt CKPT="${ckpt_path}" OUT="${onnx_path}"
+
+    # Archive consumed shards only after a successful train+export.
+    for f in "${gen_files[@]}"; do mv -f "${f}" "${PROCESSED_DIR}/generated/" || true; done
+    for f in "${scr_files[@]}"; do mv -f "${f}" "${PROCESSED_DIR}/scraped/" || true; done
+    rm -rf "${train_dir}" || true
+
+    # Update pointers for next generation round.
+    ln -sf "$(realpath --relative-to="${MODEL_DIR}" "${ckpt_path}" 2>/dev/null || echo "${ckpt_path}")" "${MODEL_DIR}/latest.pt"
+    ln -sf "$(realpath --relative-to="${MODEL_DIR}" "${onnx_path}" 2>/dev/null || echo "${onnx_path}")" "${MODEL_DIR}/snake_net.onnx"
+  fi
+
   echo "[cycle ${cycle}] generating ${GENERATE_GAMES} games"
   make generate \
     OUT_DIR="${GENERATED_DIR}" \
@@ -72,53 +117,12 @@ while true; do
     MAX_GAMES="${GENERATE_GAMES}" \
     TRACE="${TRACE}"
 
-  # Freeze the training set for this cycle (symlinks), so we can archive consumed shards.
-  train_dir="$(pwd)/.train_sets/snek2_train_${ts}"
-  mkdir -p "${train_dir}"
-
-  mapfile -t gen_files < <(find "${GENERATED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" 2>/dev/null | sort)
-  mapfile -t scr_files < <(find "${SCRAPED_DIR}" -maxdepth 1 -type f -name "*.parquet" ! -path "*/tmp/*" 2>/dev/null | sort)
-
-  if [[ ${#gen_files[@]} -eq 0 && ${#scr_files[@]} -eq 0 ]]; then
-    echo "[cycle ${cycle}] no eligible parquet shards yet; skipping training"
-    rm -rf "${train_dir}" || true
-    [[ "${SLEEP_BETWEEN_CYCLES}" != "0" ]] && sleep "${SLEEP_BETWEEN_CYCLES}"
-    continue
-  fi
-
-  i=0
-  for f in "${gen_files[@]}"; do
-    ln -sf "$(realpath "${f}")" "${train_dir}/generated_${i}.parquet"
-    i=$((i+1))
-  done
-  j=0
-  for f in "${scr_files[@]}"; do
-    ln -sf "$(realpath "${f}")" "${train_dir}/scraped_${j}.parquet"
-    j=$((j+1))
-  done
-
-  echo "[cycle ${cycle}] training on ${#gen_files[@]} generated + ${#scr_files[@]} scraped shards"
-  # trainer/train.py uses --model-path as both input and output.
-  # Seed a new history checkpoint from the current latest model so we don't
-  # re-initialize randomly each cycle.
-  if [[ ! -f "${ckpt_path}" ]]; then
-    cp -f "${MODEL_DIR}/latest.pt" "${ckpt_path}"
-  fi
-  make train ARGS="--data-dir ${train_dir} --model-path ${ckpt_path} --epochs ${TRAIN_EPOCHS} --batch-size ${TRAIN_BATCH_SIZE} --lr ${TRAIN_LR}"
-
-  echo "[cycle ${cycle}] exporting onnx (${onnx_path})"
-  make export-onnx-ckpt CKPT="${ckpt_path}" OUT="${onnx_path}"
-
-  # Archive consumed shards only after a successful train+export.
-  for f in "${gen_files[@]}"; do mv -f "${f}" "${PROCESSED_DIR}/generated/" || true; done
-  for f in "${scr_files[@]}"; do mv -f "${f}" "${PROCESSED_DIR}/scraped/" || true; done
-  rm -rf "${train_dir}" || true
-
-  # Update pointers for next generation round.
-  ln -sf "$(realpath --relative-to="${MODEL_DIR}" "${ckpt_path}" 2>/dev/null || echo "${ckpt_path}")" "${MODEL_DIR}/latest.pt"
-  ln -sf "$(realpath --relative-to="${MODEL_DIR}" "${onnx_path}" 2>/dev/null || echo "${onnx_path}")" "${MODEL_DIR}/snake_net.onnx"
-
   echo "[cycle ${cycle}] done"
+
+  if [[ "${MAX_CYCLES}" =~ ^[0-9]+$ ]] && [[ "${MAX_CYCLES}" -gt 0 ]] && [[ "${cycle}" -ge "${MAX_CYCLES}" ]]; then
+    echo "[cycle ${cycle}] reached MAX_CYCLES=${MAX_CYCLES}; exiting"
+    exit 0
+  fi
 
   [[ "${SLEEP_BETWEEN_CYCLES}" != "0" ]] && sleep "${SLEEP_BETWEEN_CYCLES}"
 

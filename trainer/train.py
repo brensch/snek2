@@ -136,7 +136,7 @@ def _unique_dest_path(dest: Path) -> Path:
     raise RuntimeError(f"unable to find unique destination for {dest}")
 
 
-def _move_to_processed(root_dir: Path, files: Iterable[str]) -> int:
+def _move_to_processed(root_dir: Path, files: Iterable[str]) -> tuple[int, Path]:
     # Prefer the repo-level processed/{scraped|generated} layout so the viewer and
     # other tooling have a single canonical archive location.
     #
@@ -189,7 +189,7 @@ def _move_to_processed(root_dir: Path, files: Iterable[str]) -> int:
             print(f"Warning: failed to move {src} -> {dest}: {e}")
             continue
 
-    return moved
+    return moved, processed_dir
 
 
 def parse_args() -> argparse.Namespace:
@@ -282,13 +282,13 @@ def _default_data_roots(cli_data_dir: str) -> list[Path]:
     return [r for r in roots if r.exists()]
 
 
-def _materialize_archive_if_needed(root: Path, files: list[str]) -> tuple[list[str], list[str]]:
-    """Return (train_files, consumed_input_files)."""
+def _materialize_archive_if_needed(root: Path, files: list[str]) -> tuple[list[str], list[str], Path | None]:
+    """Return (train_files, consumed_input_files, materialized_dir_if_created)."""
     if not files:
-        return [], []
+        return [], [], None
 
     if not _looks_like_archive_parquet(files[0]):
-        return files, files
+        return files, files, None
 
     materialized_dir = root / "materialized"
     materialized_dir.mkdir(parents=True, exist_ok=True)
@@ -306,7 +306,7 @@ def _materialize_archive_if_needed(root: Path, files: list[str]) -> tuple[list[s
 
     train_files = list_parquet_files(str(materialized_dir), max_files=0)
     # consumed inputs are the archive shards.
-    return train_files, files
+    return train_files, files, materialized_dir
 
 
 def main() -> int:
@@ -341,15 +341,18 @@ def main() -> int:
     max_files = int(args.max_files)
     train_files: list[str] = []
     consumed_by_root: dict[Path, list[str]] = {}
+    materialized_dirs: set[Path] = set()
 
     for root in roots:
         root_files = list_parquet_files(str(root), max_files=0 if max_files <= 0 else max_files)
         if not root_files:
             continue
-        tf, consumed = _materialize_archive_if_needed(root, root_files)
+        tf, consumed, materialized_dir = _materialize_archive_if_needed(root, root_files)
         if tf:
             train_files.extend(tf)
             consumed_by_root[root] = consumed
+            if materialized_dir is not None:
+                materialized_dirs.add(materialized_dir)
 
     if not train_files:
         print("No training data found.")
@@ -449,13 +452,23 @@ def main() -> int:
     # Mark consumed inputs as processed after a successful save.
     total_moved = 0
     for root, consumed in consumed_by_root.items():
-        moved = _move_to_processed(root, consumed)
+        moved, dest_dir = _move_to_processed(root, consumed)
         if moved:
-            print(f"Moved {moved} shards to {root / 'processed'}")
+            print(f"Moved {moved} shards to {dest_dir}")
         total_moved += moved
     if total_moved == 0:
         # Not an error; e.g. training from an already-processed directory.
         pass
+
+    # Remove any materialized outputs generated for this run to keep data dirs tidy.
+    # Only delete directories we explicitly created via _materialize_archive_if_needed.
+    for d in sorted(materialized_dirs):
+        try:
+            if d.exists() and d.is_dir() and d.name == "materialized":
+                shutil.rmtree(d)
+                print(f"Removed materialized dir: {d}")
+        except OSError as e:
+            print(f"Warning: failed to remove materialized dir {d}: {e}")
 
     return 0
 

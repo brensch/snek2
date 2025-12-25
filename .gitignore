@@ -50,3 +50,4 @@ __pycache__/
 
 *.claimed
 node_modules/
+*.gz

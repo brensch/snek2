@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Orchestrates: selfplay generate -> train -> export onnx -> repeat.
+# Orchestrates: train -> export onnx -> selfplay generate -> repeat.
 # Scraper runs as a separate compose service and continuously writes to data/scraped.
 
 : "${GENERATED_DIR:=data/generated}"
@@ -22,11 +22,11 @@ set -euo pipefail
 
 : "${TRAIN_EPOCHS:=10}"
 : "${TRAIN_BATCH_SIZE:=256}"
-: "${TRAIN_LR:=0.01}"
+: "${TRAIN_LR:=0.001}"
 
 : "${SLEEP_BETWEEN_CYCLES:=0}"   # seconds
 : "${MIN_FILE_AGE_SECONDS:=0}"   # 0 disables age gating (writers use atomic tmp+rename)
-: "${ARCHIVE_EXISTING_ON_START:=1}"  # move existing shards to processed/* before first cycle
+: "${ARCHIVE_EXISTING_ON_START:=0}"  # if 1, move existing shards to processed/* before first cycle
 : "${MAX_CYCLES:=0}"             # 0 = infinite
 
 # Python interpreter to use for training/export utilities.
@@ -114,24 +114,6 @@ while true; do
     export LD_LIBRARY_PATH="${WORKSPACE_DIR}:${LD_LIBRARY_PATH:-}"
   fi
 
-  echo "[cycle ${cycle}] generating ${GENERATE_GAMES} games using ${MODEL_DIR}/snake_net.onnx"
-
-  gen_args=(
-    -out-dir "${GENERATED_DIR}"
-    -workers "${WORKERS}"
-    -games-per-flush "${GAMES_PER_FLUSH}"
-    -trace="${TRACE}"
-    -mcts-sims "${MCTS_SIMS}"
-    -onnx-sessions "${ONNX_SESSIONS}"
-    -onnx-batch-timeout "${ONNX_BATCH_TIMEOUT}"
-    -max-games "${GENERATE_GAMES}"
-  )
-  if [[ "${ONNX_BATCH_SIZE}" != "0" ]]; then
-    gen_args+=( -onnx-batch-size "${ONNX_BATCH_SIZE}" )
-  fi
-
-  go run ./executor "${gen_args[@]}"
-
   # Build an explicit per-cycle training set (symlinks) so we can archive consumed shards.
   train_dir="${WORKSPACE_DIR}/.train_sets/snek2_train_${ts}"
   mkdir -p "${train_dir}"
@@ -150,62 +132,80 @@ while true; do
   if [[ ${#gen_files[@]} -eq 0 && ${#scr_files[@]} -eq 0 ]]; then
     echo "[cycle ${cycle}] no eligible parquet shards yet; skipping training"
     rm -rf "${train_dir}" || true
-    if [[ "${SLEEP_BETWEEN_CYCLES}" != "0" ]]; then
-      sleep "${SLEEP_BETWEEN_CYCLES}"
+  else
+    i=0
+    for f in "${gen_files[@]}"; do
+      f_abs="$(realpath "${f}" 2>/dev/null || readlink -f "${f}" 2>/dev/null || echo "${f}")"
+      ln -sf "${f_abs}" "${train_dir}/generated_${i}.parquet"
+      i=$((i+1))
+    done
+    j=0
+    for f in "${scr_files[@]}"; do
+      f_abs="$(realpath "${f}" 2>/dev/null || readlink -f "${f}" 2>/dev/null || echo "${f}")"
+      ln -sf "${f_abs}" "${train_dir}/scraped_${j}.parquet"
+      j=$((j+1))
+    done
+
+    if [[ ! -f "${ckpt_path}" ]]; then
+      cp -f "${MODEL_DIR}/latest.pt" "${ckpt_path}"
     fi
-    continue
+
+    echo "[cycle ${cycle}] training on ${#gen_files[@]} generated + ${#scr_files[@]} scraped shards (ckpt=${ckpt_path})"
+    "${PYTHON_BIN}" trainer/train.py \
+      --data-dir "${train_dir}" \
+      --model-path "${ckpt_path}" \
+      --epochs "${TRAIN_EPOCHS}" \
+      --batch-size "${TRAIN_BATCH_SIZE}" \
+      --lr "${TRAIN_LR}"
+
+    echo "[cycle ${cycle}] exporting onnx (${onnx_path})"
+    "${PYTHON_BIN}" trainer/export_onnx.py --ckpt "${ckpt_path}" --out "${onnx_path}"
+
+    # Archive consumed shards only after a successful train+export.
+    for f in "${gen_files[@]}"; do
+      base=$(basename "${f}")
+      mv -f "${f}" "${PROCESSED_DIR}/generated/${base}"
+    done
+    for f in "${scr_files[@]}"; do
+      base=$(basename "${f}")
+      mv -f "${f}" "${PROCESSED_DIR}/scraped/${base}"
+    done
+    rm -rf "${train_dir}" || true
+
+    # Update "latest" pointers for next generation round.
+    rel_ckpt="$(realpath --relative-to="${MODEL_DIR}" "${ckpt_path}" 2>/dev/null || true)"
+    rel_onnx="$(realpath --relative-to="${MODEL_DIR}" "${onnx_path}" 2>/dev/null || true)"
+    if [[ -n "${rel_ckpt}" ]]; then
+      ln -sf "${rel_ckpt}" "${MODEL_DIR}/latest.pt"
+    else
+      ln -sf "${ckpt_path}" "${MODEL_DIR}/latest.pt"
+    fi
+    if [[ -n "${rel_onnx}" ]]; then
+      ln -sf "${rel_onnx}" "${MODEL_DIR}/snake_net.onnx"
+    else
+      ln -sf "${onnx_path}" "${MODEL_DIR}/snake_net.onnx"
+    fi
   fi
 
-  i=0
-  for f in "${gen_files[@]}"; do
-    f_abs="$(realpath "${f}" 2>/dev/null || readlink -f "${f}" 2>/dev/null || echo "${f}")"
-    ln -sf "${f_abs}" "${train_dir}/generated_${i}.parquet"
-    i=$((i+1))
-  done
-  j=0
-  for f in "${scr_files[@]}"; do
-    f_abs="$(realpath "${f}" 2>/dev/null || readlink -f "${f}" 2>/dev/null || echo "${f}")"
-    ln -sf "${f_abs}" "${train_dir}/scraped_${j}.parquet"
-    j=$((j+1))
-  done
+  echo "[cycle ${cycle}] generating ${GENERATE_GAMES} games using ${MODEL_DIR}/snake_net.onnx"
 
-  echo "[cycle ${cycle}] training on ${#gen_files[@]} generated + ${#scr_files[@]} scraped shards (ckpt=${ckpt_path})"
-  "${PYTHON_BIN}" trainer/train.py \
-    --data-dir "${train_dir}" \
-    --model-path "${ckpt_path}" \
-    --epochs "${TRAIN_EPOCHS}" \
-    --batch-size "${TRAIN_BATCH_SIZE}" \
-    --lr "${TRAIN_LR}"
-
-  echo "[cycle ${cycle}] exporting onnx (${onnx_path})"
-  "${PYTHON_BIN}" trainer/export_onnx.py --ckpt "${ckpt_path}" --out "${onnx_path}"
-
-  # Archive consumed shards only after a successful train+export.
-  for f in "${gen_files[@]}"; do
-    base=$(basename "${f}")
-    mv -f "${f}" "${PROCESSED_DIR}/generated/${base}"
-  done
-  for f in "${scr_files[@]}"; do
-    base=$(basename "${f}")
-    mv -f "${f}" "${PROCESSED_DIR}/scraped/${base}"
-  done
-  rm -rf "${train_dir}" || true
-
-  # Update "latest" pointers for next generation round.
-  rel_ckpt="$(realpath --relative-to="${MODEL_DIR}" "${ckpt_path}" 2>/dev/null || true)"
-  rel_onnx="$(realpath --relative-to="${MODEL_DIR}" "${onnx_path}" 2>/dev/null || true)"
-  if [[ -n "${rel_ckpt}" ]]; then
-    ln -sf "${rel_ckpt}" "${MODEL_DIR}/latest.pt"
-  else
-    ln -sf "${ckpt_path}" "${MODEL_DIR}/latest.pt"
-  fi
-  if [[ -n "${rel_onnx}" ]]; then
-    ln -sf "${rel_onnx}" "${MODEL_DIR}/snake_net.onnx"
-  else
-    ln -sf "${onnx_path}" "${MODEL_DIR}/snake_net.onnx"
+  gen_args=(
+    -out-dir "${GENERATED_DIR}"
+    -workers "${WORKERS}"
+    -games-per-flush "${GAMES_PER_FLUSH}"
+    -trace="${TRACE}"
+    -mcts-sims "${MCTS_SIMS}"
+    -onnx-sessions "${ONNX_SESSIONS}"
+    -onnx-batch-timeout "${ONNX_BATCH_TIMEOUT}"
+    -max-games "${GENERATE_GAMES}"
+  )
+  if [[ "${ONNX_BATCH_SIZE}" != "0" ]]; then
+    gen_args+=( -onnx-batch-size "${ONNX_BATCH_SIZE}" )
   fi
 
-  echo "[cycle ${cycle}] done (latest.pt -> ${ckpt_path}, snake_net.onnx -> ${onnx_path})"
+  go run ./executor "${gen_args[@]}"
+
+  echo "[cycle ${cycle}] done"
 
   if [[ "${MAX_CYCLES}" =~ ^[0-9]+$ ]] && [[ "${MAX_CYCLES}" -gt 0 ]] && [[ "${cycle}" -ge "${MAX_CYCLES}" ]]; then
     echo "[cycle ${cycle}] reached MAX_CYCLES=${MAX_CYCLES}; exiting"
