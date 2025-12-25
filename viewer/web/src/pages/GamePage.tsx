@@ -1,6 +1,15 @@
 import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { fetchGameTurns, type Snake, type Turn } from '../api'
+import {
+  fetchGameTurns,
+  fetchMctsAll,
+  simulateTurn,
+  type MctsAllResponse,
+  type MctsMove,
+  type MctsNode,
+  type Snake,
+  type Turn,
+} from '../api'
 import { renderAsciiBoard, snakeLetters } from '../board'
 
 function clamp01(x: number): number {
@@ -93,6 +102,97 @@ function PolicyCross({ snake }: { snake: Snake }) {
   )
 }
 
+function fmtMoveName(m: number): string {
+  switch (m) {
+    case 0:
+      return 'Up'
+    case 1:
+      return 'Down'
+    case 2:
+      return 'Left'
+    case 3:
+      return 'Right'
+    default:
+      return 'Unknown'
+  }
+}
+
+function MctsCross({
+  node,
+  onPick,
+}: {
+  node: MctsNode
+  onPick: (move: number) => void
+}) {
+  const cell: CSSProperties = {
+    width: 92,
+    height: 62,
+    border: '1px solid #ddd',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'center',
+    alignItems: 'center',
+    fontSize: 12,
+    lineHeight: 1.1,
+    cursor: 'pointer',
+    userSelect: 'none',
+  }
+
+  const center: CSSProperties = {
+    ...cell,
+    cursor: 'default',
+    color: '#666',
+    fontSize: 12,
+  }
+
+  const render = (mv: MctsMove, label: string) => {
+    const disabled = !mv.exists
+    return (
+      <div
+        style={{
+          ...cell,
+          cursor: disabled ? 'not-allowed' : 'pointer',
+          opacity: mv.exists ? 1 : 0.35,
+          fontWeight: mv.exists ? 600 : 400,
+        }}
+        title={mv.exists ? `${fmtMoveName(mv.move)}\nUCB=${mv.ucb.toFixed(3)} N=${mv.n} Q=${mv.q.toFixed(3)} P=${mv.p.toFixed(3)}` : 'Illegal/unexpanded'}
+        onClick={() => {
+          if (disabled) return
+          onPick(mv.move)
+        }}
+      >
+        <div>{label}</div>
+        <div style={{ color: '#444' }}>UCB {mv.ucb.toFixed(3)}</div>
+        <div style={{ color: '#666' }}>N {mv.n} · Q {mv.q.toFixed(3)} · P {mv.p.toFixed(3)}</div>
+      </div>
+    )
+  }
+
+  const up = node.moves[0]
+  const down = node.moves[1]
+  const left = node.moves[2]
+  const right = node.moves[3]
+
+  return (
+    <div style={{ display: 'grid', gridTemplateColumns: '92px 92px 92px', gap: 6 }}>
+      <div />
+      {render(up, 'U')}
+      <div />
+
+      {render(left, 'L')}
+      <div style={center}>
+        <div>visits {node.visit_count}</div>
+        <div>V {node.value.toFixed(3)}</div>
+      </div>
+      {render(right, 'R')}
+
+      <div />
+      {render(down, 'D')}
+      <div />
+    </div>
+  )
+}
+
 export default function GamePage() {
   const { gameId } = useParams()
   const [turns, setTurns] = useState<Turn[]>([])
@@ -101,6 +201,13 @@ export default function GamePage() {
   const [idx, setIdx] = useState<number>(0)
   const [playing, setPlaying] = useState<boolean>(false)
   const [speedMs, setSpeedMs] = useState<number>(50)
+
+  const [mctsAll, setMctsAll] = useState<MctsAllResponse | null>(null)
+  const [mctsMoves, setMctsMoves] = useState<Record<string, number>>({})
+  const [mctsLoading, setMctsLoading] = useState<boolean>(false)
+  const [mctsError, setMctsError] = useState<string>('')
+  const [simTurn, setSimTurn] = useState<Turn | null>(null)
+  const [simError, setSimError] = useState<string>('')
 
   useEffect(() => {
     if (!gameId) return
@@ -153,6 +260,40 @@ export default function GamePage() {
 
   const current = turns[Math.min(idx, Math.max(0, turns.length - 1))]
   const board = useMemo(() => (current ? renderAsciiBoard(current) : ''), [current])
+
+  const simBoard = useMemo(() => (simTurn ? renderAsciiBoard(simTurn) : ''), [simTurn])
+
+  useEffect(() => {
+    // Reset MCTS panels when stepping turns.
+    setMctsAll(null)
+    setMctsMoves({})
+    setMctsError('')
+    setSimTurn(null)
+    setSimError('')
+  }, [idx, gameId])
+
+  useEffect(() => {
+    if (!mctsAll) return
+    if (!mctsAll.state) return
+    if (!mctsAll.snakes?.length) return
+
+    let cancelled = false
+    setSimError('')
+    simulateTurn(mctsAll.state, mctsMoves)
+      .then((t) => {
+        if (cancelled) return
+        setSimTurn(t)
+      })
+      .catch((e: unknown) => {
+        if (cancelled) return
+        setSimTurn(null)
+        setSimError(e instanceof Error ? e.message : String(e))
+      })
+
+    return () => {
+      cancelled = true
+    }
+  }, [mctsAll, mctsMoves])
 
   if (!gameId) return <div>Missing game id.</div>
   if (loading) return <div>Loading…</div>
@@ -218,7 +359,93 @@ export default function GamePage() {
         </pre>
 
         <div style={{ minWidth: 260 }}>
-          <h3 style={{ margin: '0 0 8px 0' }}>Snakes</h3>
+          <h3 style={{ margin: '0 0 8px 0' }}>MCTS explorer</h3>
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+            <button
+              disabled={mctsLoading}
+              onClick={() => {
+                if (!gameId) return
+                setMctsLoading(true)
+                setMctsError('')
+                setMctsAll(null)
+                setMctsMoves({})
+                setSimTurn(null)
+                setSimError('')
+                fetchMctsAll(gameId, current.turn, 800, 3, 1.0)
+                  .then((r) => {
+                    setMctsAll(r)
+                    const moves: Record<string, number> = {}
+                    for (const st of r.snakes ?? []) {
+                      if (!st.snake_id) continue
+                      if (typeof st.best_move === 'number' && st.best_move >= 0) {
+                        moves[st.snake_id] = st.best_move
+                      } else {
+                        moves[st.snake_id] = 0
+                      }
+                    }
+                    setMctsMoves(moves)
+                  })
+                  .catch((e: unknown) => {
+                    setMctsError(e instanceof Error ? e.message : String(e))
+                  })
+                  .finally(() => setMctsLoading(false))
+              }}
+            >
+              {mctsLoading ? 'Running…' : 'Re-run MCTS (800)'}
+            </button>
+          </div>
+
+          {mctsError ? <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>Error: {mctsError}</div> : null}
+
+          {mctsAll ? (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ color: '#666', fontSize: 12, marginBottom: 6 }}>
+                sims: {mctsAll.sims} · cpuct: {mctsAll.cpuct} · depth: {mctsAll.depth}
+              </div>
+
+              {(mctsAll.snakes ?? []).map((s) => {
+                const { head } = snakeLetters(s.snake_idx)
+                const chosen = mctsMoves[s.snake_id]
+                return (
+                  <div key={s.snake_id} style={{ marginBottom: 12 }}>
+                    <div style={{ marginBottom: 6, fontSize: 12 }}>
+                      <strong>{head}</strong> — {s.snake_id}
+                      {typeof chosen === 'number' ? ` · chosen: ${fmtMoveName(chosen)}` : ''}
+                      {typeof s.best_move === 'number' && s.best_move >= 0 ? ` · best: ${fmtMoveName(s.best_move)}` : ''}
+                    </div>
+                    {s.root ? (
+                      <MctsCross
+                        node={s.root}
+                        onPick={(move) => {
+                          setMctsMoves((m) => ({ ...m, [s.snake_id]: move }))
+                        }}
+                      />
+                    ) : (
+                      <div style={{ fontSize: 12, color: '#666' }}>dead / no root</div>
+                    )}
+                  </div>
+                )
+              })}
+
+              {simError ? <div style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>Sim error: {simError}</div> : null}
+              {simBoard ? (
+                <pre
+                  style={{
+                    lineHeight: 1.2,
+                    fontSize: 14,
+                    padding: 12,
+                    border: '1px solid #ddd',
+                    overflowX: 'auto',
+                    margin: '10px 0 0 0',
+                  }}
+                >
+                  {simBoard}
+                </pre>
+              ) : null}
+            </div>
+          ) : null}
+
+          <h3 style={{ margin: '12px 0 8px 0' }}>Snakes</h3>
           {current.snakes.map((s, i) => {
             const { head } = snakeLetters(i)
             return (

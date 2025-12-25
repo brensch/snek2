@@ -6,15 +6,23 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/brensch/snek2/executor/inference"
+	"github.com/brensch/snek2/executor/mcts"
+	gamepkg "github.com/brensch/snek2/game"
+	"github.com/brensch/snek2/rules"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 )
@@ -86,6 +94,61 @@ type Turn struct {
 	Source  string  `json:"source"`
 }
 
+type MCTSMove struct {
+	Move   int       `json:"move"`
+	Exists bool      `json:"exists"`
+	N      int       `json:"n"`
+	Q      float32   `json:"q"`
+	P      float32   `json:"p"`
+	UCB    float32   `json:"ucb"`
+	Child  *MCTSNode `json:"child,omitempty"`
+}
+
+type MCTSNode struct {
+	VisitCount int         `json:"visit_count"`
+	Value      float32     `json:"value"`
+	State      *Turn       `json:"state,omitempty"`
+	Moves      [4]MCTSMove `json:"moves"`
+}
+
+type MCTSResponse struct {
+	GameID   string    `json:"game_id"`
+	Turn     int32     `json:"turn"`
+	EgoIdx   int       `json:"ego_idx"`
+	EgoID    string    `json:"ego_id"`
+	Sims     int       `json:"sims"`
+	Cpuct    float32   `json:"cpuct"`
+	Depth    int       `json:"depth"`
+	MaxDepth int       `json:"max_depth"`
+	BestMove int       `json:"best_move"`
+	Root     *MCTSNode `json:"root"`
+}
+
+type MCTSSnakeTree struct {
+	SnakeIdx int       `json:"snake_idx"`
+	SnakeID  string    `json:"snake_id"`
+	BestMove int       `json:"best_move"`
+	Root     *MCTSNode `json:"root"`
+}
+
+// MCTSAllResponse emulates the selfplay generation logic:
+// run an independent MCTS for each living snake (each with its own YouId perspective)
+// on the same position.
+type MCTSAllResponse struct {
+	GameID string          `json:"game_id"`
+	Turn   int32           `json:"turn"`
+	Sims   int             `json:"sims"`
+	Cpuct  float32         `json:"cpuct"`
+	Depth  int             `json:"depth"`
+	State  Turn            `json:"state"`
+	Snakes []MCTSSnakeTree `json:"snakes"`
+}
+
+type SimulateRequest struct {
+	State Turn           `json:"state"`
+	Moves map[string]int `json:"moves"`
+}
+
 func main() {
 	fs := flag.NewFlagSet(os.Args[0], flag.ContinueOnError)
 	fs.SetOutput(os.Stderr)
@@ -94,6 +157,9 @@ func main() {
 	dataDir := fs.String("data-dir", "", "Directory containing archive parquet shards (archive_turn_v1) [deprecated: prefer -data-dirs]")
 	dataDirs := fs.String("data-dirs", strings.Join(defaultDataDirs(), ","), "Comma-separated list of directories containing archive parquet shards (archive_turn_v1)")
 	staticDir := fs.String("static-dir", "", "Optional directory to serve as SPA static (e.g. viewer/web/dist)")
+	modelPath := fs.String("model-path", filepath.Join("models", "snake_net.onnx"), "ONNX model path for MCTS explorer")
+	mctsSessions := fs.Int("mcts-sessions", 1, "Number of ONNX sessions for MCTS explorer")
+	mctsCUDA := fs.Bool("mcts-cuda", true, "Enable CUDA execution provider for MCTS explorer (requires CUDA runtime libs)")
 	if err := fs.Parse(os.Args[1:]); err != nil {
 		log.Fatalf("flag parse: %v", err)
 	}
@@ -105,6 +171,21 @@ func main() {
 	}
 
 	log.Printf("Viewer data roots: %s", strings.Join(roots, ","))
+
+	var poolOnce sync.Once
+	var pool *inference.OnnxPool
+	var poolErr error
+	getPool := func() (*inference.OnnxPool, error) {
+		poolOnce.Do(func() {
+			if !*mctsCUDA {
+				if os.Getenv("SNEK2_ORT_DISABLE_CUDA") == "" {
+					_ = os.Setenv("SNEK2_ORT_DISABLE_CUDA", "1")
+				}
+			}
+			pool, poolErr = inference.NewOnnxClientPool(*modelPath, *mctsSessions)
+		})
+		return pool, poolErr
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/games", func(w http.ResponseWriter, r *http.Request) {
@@ -216,6 +297,265 @@ func main() {
 			return
 		}
 		writeJSON(w, StatsResponse{FromNs: fromNs, ToNs: toNs, BucketNs: bucketNs, Points: points})
+	})
+
+	mux.HandleFunc("/api/mcts", func(w http.ResponseWriter, r *http.Request) {
+		withCORS(w, r)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		gameID := strings.TrimSpace(r.URL.Query().Get("game_id"))
+		turn := parseIntQuery(r, "turn", -1)
+		egoIdx := parseIntQuery(r, "ego_idx", 0)
+		sims := parseIntQuery(r, "sims", 800)
+		depth := parseIntQuery(r, "depth", 3)
+		cpuctStr := strings.TrimSpace(r.URL.Query().Get("cpuct"))
+		cpuct := float32(1.0)
+		if cpuctStr != "" {
+			if f, err := strconv.ParseFloat(cpuctStr, 32); err == nil {
+				cpuct = float32(f)
+			}
+		}
+
+		if gameID == "" || turn < 0 {
+			http.Error(w, "missing game_id or turn", http.StatusBadRequest)
+			return
+		}
+		if sims <= 0 {
+			sims = 800
+		}
+		if depth < 0 {
+			depth = 0
+		}
+
+		p, err := getPool()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		db, err := openDuckDBForRoots(roots)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
+		ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+		defer cancel()
+
+		t, err := queryTurn(ctx, db, gameID, int32(turn))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		state, egoID, err := turnToGameState(t, egoIdx)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		m := &mcts.MCTS{Config: mcts.Config{Cpuct: cpuct}, Client: p}
+		root, maxDepth, err := m.Search(ctx, state, sims)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		bestMove := -1
+		bestN := -1
+		for i := 0; i < 4; i++ {
+			child := root.Children[mcts.Move(i)]
+			if child == nil {
+				continue
+			}
+			if child.VisitCount > bestN {
+				bestN = child.VisitCount
+				bestMove = i
+			}
+		}
+
+		resp := MCTSResponse{
+			GameID:   gameID,
+			Turn:     t.Turn,
+			EgoIdx:   egoIdx,
+			EgoID:    egoID,
+			Sims:     sims,
+			Cpuct:    cpuct,
+			Depth:    depth,
+			MaxDepth: maxDepth,
+			BestMove: bestMove,
+			Root:     buildMCTSNode(gameID, root, depth, cpuct),
+		}
+		writeJSON(w, resp)
+	})
+
+	mux.HandleFunc("/api/mcts_all", func(w http.ResponseWriter, r *http.Request) {
+		withCORS(w, r)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		gameID := strings.TrimSpace(r.URL.Query().Get("game_id"))
+		turn := parseIntQuery(r, "turn", -1)
+		sims := parseIntQuery(r, "sims", 800)
+		depth := parseIntQuery(r, "depth", 3)
+		cpuctStr := strings.TrimSpace(r.URL.Query().Get("cpuct"))
+		cpuct := float32(1.0)
+		if cpuctStr != "" {
+			if f, err := strconv.ParseFloat(cpuctStr, 32); err == nil {
+				cpuct = float32(f)
+			}
+		}
+
+		if gameID == "" || turn < 0 {
+			http.Error(w, "missing game_id or turn", http.StatusBadRequest)
+			return
+		}
+		if sims <= 0 {
+			sims = 800
+		}
+		if depth < 0 {
+			depth = 0
+		}
+
+		p, err := getPool()
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		db, err := openDuckDBForRoots(roots)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
+		ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
+		defer cancel()
+
+		t, err := queryTurn(ctx, db, gameID, int32(turn))
+		if err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				http.NotFound(w, r)
+				return
+			}
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		baseState, err := turnToGameStateBase(t)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		out := MCTSAllResponse{GameID: gameID, Turn: t.Turn, Sims: sims, Cpuct: cpuct, Depth: depth, State: t}
+		out.Snakes = make([]MCTSSnakeTree, len(t.Snakes))
+
+		var wg sync.WaitGroup
+		errCh := make(chan error, 1)
+		for idx := range t.Snakes {
+			s := t.Snakes[idx]
+			if !s.Alive || s.Health <= 0 || len(s.Body) == 0 {
+				out.Snakes[idx] = MCTSSnakeTree{SnakeIdx: idx, SnakeID: s.ID, BestMove: -1, Root: nil}
+				continue
+			}
+
+			wg.Add(1)
+			go func(snakeIdx int, snakeID string) {
+				defer wg.Done()
+				local := baseState.Clone()
+				local.YouId = snakeID
+
+				m := &mcts.MCTS{Config: mcts.Config{Cpuct: cpuct}, Client: p}
+				root, _, err := m.Search(ctx, local, sims)
+				if err != nil {
+					select {
+					case errCh <- err:
+					default:
+					}
+					return
+				}
+
+				bestMove := -1
+				bestN := -1
+				for i := 0; i < 4; i++ {
+					child := root.Children[mcts.Move(i)]
+					if child == nil {
+						continue
+					}
+					if child.VisitCount > bestN {
+						bestN = child.VisitCount
+						bestMove = i
+					}
+				}
+				if bestMove < 0 {
+					bestMove = 0
+				}
+
+				out.Snakes[snakeIdx] = MCTSSnakeTree{
+					SnakeIdx: snakeIdx,
+					SnakeID:  snakeID,
+					BestMove: bestMove,
+					Root:     buildMCTSNode(gameID, root, depth, cpuct),
+				}
+			}(idx, s.ID)
+		}
+		wg.Wait()
+
+		select {
+		case err := <-errCh:
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		default:
+		}
+
+		writeJSON(w, out)
+	})
+
+	mux.HandleFunc("/api/simulate", func(w http.ResponseWriter, r *http.Request) {
+		withCORS(w, r)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		var req SimulateRequest
+		dec := json.NewDecoder(r.Body)
+		if err := dec.Decode(&req); err != nil {
+			http.Error(w, "bad json", http.StatusBadRequest)
+			return
+		}
+		st, err := turnToGameStateBase(req.State)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if req.Moves == nil {
+			req.Moves = map[string]int{}
+		}
+
+		next := rules.NextStateSimultaneous(st, req.Moves)
+		writeJSON(w, gameStateToTurn(req.State.GameID, next))
 	})
 
 	if strings.TrimSpace(*staticDir) != "" {
@@ -784,6 +1124,168 @@ func queryTurns(ctx context.Context, db *sql.DB, gameID string) ([]Turn, error) 
 		return nil, err
 	}
 	return turns, nil
+}
+
+func queryTurn(ctx context.Context, db *sql.DB, gameID string, turn int32) (Turn, error) {
+	row := db.QueryRowContext(ctx,
+		`SELECT game_id, turn::INTEGER, width::INTEGER, height::INTEGER, food_x, food_y, hazard_x, hazard_y, snakes, source
+		 FROM turns
+		 WHERE game_id = ? AND turn = ?
+		 LIMIT 1`, gameID, turn)
+
+	var t Turn
+	var foodXAny any
+	var foodYAny any
+	var hazXAny any
+	var hazYAny any
+	var snakesAny any
+	if err := row.Scan(&t.GameID, &t.Turn, &t.Width, &t.Height, &foodXAny, &foodYAny, &hazXAny, &hazYAny, &snakesAny, &t.Source); err != nil {
+		return Turn{}, err
+	}
+	t.Food = zipPoints(asInt32Slice(foodXAny), asInt32Slice(foodYAny))
+	t.Hazards = zipPoints(asInt32Slice(hazXAny), asInt32Slice(hazYAny))
+	t.Snakes = asSnakes(snakesAny)
+	return t, nil
+}
+
+func turnToGameState(t Turn, egoIdx int) (*gamepkg.GameState, string, error) {
+	if egoIdx < 0 || egoIdx >= len(t.Snakes) {
+		return nil, "", fmt.Errorf("ego_idx out of range")
+	}
+	if t.Width <= 0 || t.Height <= 0 {
+		return nil, "", fmt.Errorf("invalid board size")
+	}
+
+	food := make([]gamepkg.Point, 0, len(t.Food))
+	for _, p := range t.Food {
+		food = append(food, gamepkg.Point{X: p.X, Y: p.Y})
+	}
+
+	snakes := make([]gamepkg.Snake, 0, len(t.Snakes))
+	for _, s := range t.Snakes {
+		body := make([]gamepkg.Point, 0, len(s.Body))
+		for _, bp := range s.Body {
+			body = append(body, gamepkg.Point{X: bp.X, Y: bp.Y})
+		}
+		snakes = append(snakes, gamepkg.Snake{Id: s.ID, Health: s.Health, Body: body})
+	}
+
+	egoID := t.Snakes[egoIdx].ID
+	st := &gamepkg.GameState{
+		Width:  t.Width,
+		Height: t.Height,
+		Snakes: snakes,
+		Food:   food,
+		YouId:  egoID,
+		Turn:   t.Turn,
+	}
+	return st, egoID, nil
+}
+
+func turnToGameStateBase(t Turn) (*gamepkg.GameState, error) {
+	if t.Width <= 0 || t.Height <= 0 {
+		return nil, fmt.Errorf("invalid board size")
+	}
+	if len(t.Snakes) == 0 {
+		return nil, fmt.Errorf("no snakes")
+	}
+
+	food := make([]gamepkg.Point, 0, len(t.Food))
+	for _, p := range t.Food {
+		food = append(food, gamepkg.Point{X: p.X, Y: p.Y})
+	}
+
+	snakes := make([]gamepkg.Snake, 0, len(t.Snakes))
+	for _, s := range t.Snakes {
+		body := make([]gamepkg.Point, 0, len(s.Body))
+		for _, bp := range s.Body {
+			body = append(body, gamepkg.Point{X: bp.X, Y: bp.Y})
+		}
+		snakes = append(snakes, gamepkg.Snake{Id: s.ID, Health: s.Health, Body: body})
+	}
+
+	st := &gamepkg.GameState{
+		Width:  t.Width,
+		Height: t.Height,
+		Snakes: snakes,
+		Food:   food,
+		YouId:  t.Snakes[0].ID,
+		Turn:   t.Turn,
+	}
+	return st, nil
+}
+
+func gameStateToTurn(gameID string, s *gamepkg.GameState) Turn {
+	if s == nil {
+		return Turn{}
+	}
+
+	out := Turn{
+		GameID:  gameID,
+		Turn:    s.Turn,
+		Width:   s.Width,
+		Height:  s.Height,
+		Source:  "mcts",
+		Food:    make([]Point, 0, len(s.Food)),
+		Hazards: nil,
+		Snakes:  make([]Snake, 0, len(s.Snakes)),
+	}
+	for _, p := range s.Food {
+		out.Food = append(out.Food, Point{X: p.X, Y: p.Y})
+	}
+	for _, sn := range s.Snakes {
+		body := make([]Point, 0, len(sn.Body))
+		for _, bp := range sn.Body {
+			body = append(body, Point{X: bp.X, Y: bp.Y})
+		}
+		out.Snakes = append(out.Snakes, Snake{
+			ID:     sn.Id,
+			Alive:  sn.Health > 0,
+			Health: sn.Health,
+			Body:   body,
+			Policy: -1,
+			Value:  0,
+		})
+	}
+	return out
+}
+
+func buildMCTSNode(gameID string, n *mcts.Node, depth int, cpuct float32) *MCTSNode {
+	if n == nil {
+		return nil
+	}
+
+	avg := float32(0)
+	if n.VisitCount > 0 {
+		avg = n.ValueSum / float32(n.VisitCount)
+	}
+
+	out := &MCTSNode{VisitCount: n.VisitCount, Value: avg}
+	if n.State != nil {
+		t := gameStateToTurn(gameID, n.State)
+		out.State = &t
+	}
+	sqrtSumN := float32(math.Sqrt(float64(n.VisitCount)))
+
+	for i := 0; i < 4; i++ {
+		child := n.Children[mcts.Move(i)]
+		mv := MCTSMove{Move: i}
+		if child != nil {
+			mv.Exists = true
+			mv.N = child.VisitCount
+			if child.VisitCount > 0 {
+				mv.Q = child.ValueSum / float32(child.VisitCount)
+			}
+			mv.P = child.PriorProb
+			mv.UCB = mv.Q + cpuct*mv.P*sqrtSumN/(1+float32(child.VisitCount))
+			if depth > 0 {
+				mv.Child = buildMCTSNode(gameID, child, depth-1, cpuct)
+			}
+		}
+		out.Moves[i] = mv
+	}
+
+	return out
 }
 
 func zipPoints(xs, ys []int32) []Point {

@@ -25,6 +25,18 @@
             "problemMatcher": []
         },
         {
+            "label": "Run Viewer",
+            "type": "shell",
+            "command": "make run-viewer",
+            "presentation": {
+                "group": "snek",
+                "reveal": "always",
+                "panel": "split"
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
             "label": "Run All",
             "dependsOn": ["Run Python Server", "Run Go Worker"],
             "problemMatcher": [],
