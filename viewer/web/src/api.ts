@@ -8,11 +8,33 @@ export type GameSummary = {
   height: number
   source: string
   file: string
+	results?: string
 }
 
 export type GamesResponse = {
   total: number
   games: GameSummary[]
+}
+
+export type StatsPoint = {
+  t_ns: number
+
+  selfplay_games: number
+  selfplay_total_turns: number
+  selfplay_wins: number
+  selfplay_draws: number
+
+  scraped_games: number
+  scraped_total_turns: number
+  scraped_wins: number
+  scraped_draws: number
+}
+
+export type StatsResponse = {
+  from_ns: number
+  to_ns: number
+  bucket_ns: number
+  points: StatsPoint[]
 }
 
 export type Point = { x: number; y: number }
@@ -53,4 +75,11 @@ export async function fetchGameTurns(gameId: string): Promise<Turn[]> {
   const res = await fetch(`/api/games/${encodeURIComponent(gameId)}/turns`)
   if (!res.ok) throw new Error(await res.text())
   return (await res.json()) as Turn[]
+}
+
+export async function fetchStats(fromNs: number, toNs: number, bucketNs: number): Promise<StatsResponse> {
+  const url = `/api/stats?from_ns=${fromNs}&to_ns=${toNs}&bucket_ns=${bucketNs}`
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(await res.text())
+  return (await res.json()) as StatsResponse
 }

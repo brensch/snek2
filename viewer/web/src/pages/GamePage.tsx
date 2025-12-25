@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { fetchGameTurns, type Turn } from '../api'
-import { renderAsciiBoard } from '../board'
+import { renderAsciiBoard, snakeLetters } from '../board'
 
 export default function GamePage() {
   const { gameId } = useParams()
@@ -129,11 +129,14 @@ export default function GamePage() {
       <div style={{ marginTop: 12 }}>
         <h3 style={{ margin: '8px 0' }}>Snakes</h3>
         <ul>
-          {current.snakes.map((s) => (
-            <li key={s.id}>
-              {s.id} — alive: {String(s.alive)} — health: {s.health} — value: {s.value}
-            </li>
-          ))}
+          {current.snakes.map((s, i) => {
+            const { head } = snakeLetters(i)
+            return (
+              <li key={s.id}>
+                {head} — id: {s.id} — alive: {String(s.alive)} — health: {s.health} — value: {s.value}
+              </li>
+            )
+          })}
         </ul>
       </div>
     </div>

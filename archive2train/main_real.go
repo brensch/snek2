@@ -206,7 +206,6 @@ func convertOne(inPath string, outPath string) (int, error) {
 					copy(x, *bPtr)
 					convert.PutBuffer(bPtr)
 
-
 					policyProbs := ego.PolicyProbs
 					if len(policyProbs) != 4 {
 						// Some older/selfplay archive shards may omit policy_probs.

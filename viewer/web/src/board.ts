@@ -1,6 +1,6 @@
 import type { Turn } from './api'
 
-function snakeLetters(i: number) {
+export function snakeLetters(i: number) {
   const head = String.fromCharCode('A'.charCodeAt(0) + (i % 26))
   const body = String.fromCharCode('a'.charCodeAt(0) + (i % 26))
   return { head, body }

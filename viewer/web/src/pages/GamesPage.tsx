@@ -147,6 +147,7 @@ export default function GamesPage() {
                   File{sortLabel('file')}
                 </button>
               </th>
+			  <th style={{ textAlign: 'left', borderBottom: '1px solid #ddd', padding: 6 }}>Result</th>
             </tr>
           </thead>
           <tbody>
@@ -163,6 +164,7 @@ export default function GamesPage() {
                 <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f0f0f0' }}>{g.height}</td>
                 <td style={{ padding: 6, borderBottom: '1px solid #f0f0f0' }}>{g.source}</td>
                 <td style={{ padding: 6, borderBottom: '1px solid #f0f0f0' }}>{g.file}</td>
+				<td style={{ padding: 6, borderBottom: '1px solid #f0f0f0' }}>{g.results ?? ''}</td>
               </tr>
             ))}
           </tbody>

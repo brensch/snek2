@@ -31,11 +31,33 @@ type GameSummary struct {
 	Height     int32  `json:"height"`
 	Source     string `json:"source"`
 	SourceFile string `json:"file"`
+	Results    string `json:"results"`
 }
 
 type GamesResponse struct {
 	Total int64         `json:"total"`
 	Games []GameSummary `json:"games"`
+}
+
+type StatsPoint struct {
+	TNs int64 `json:"t_ns"`
+
+	SelfplayGames      int64 `json:"selfplay_games"`
+	SelfplayTotalTurns int64 `json:"selfplay_total_turns"`
+	SelfplayWins       int64 `json:"selfplay_wins"`
+	SelfplayDraws      int64 `json:"selfplay_draws"`
+
+	ScrapedGames      int64 `json:"scraped_games"`
+	ScrapedTotalTurns int64 `json:"scraped_total_turns"`
+	ScrapedWins       int64 `json:"scraped_wins"`
+	ScrapedDraws      int64 `json:"scraped_draws"`
+}
+
+type StatsResponse struct {
+	FromNs   int64        `json:"from_ns"`
+	ToNs     int64        `json:"to_ns"`
+	BucketNs int64        `json:"bucket_ns"`
+	Points   []StatsPoint `json:"points"`
 }
 
 type Point struct {
@@ -82,17 +104,7 @@ func main() {
 		roots = []string{strings.TrimSpace(*dataDir)}
 	}
 
-	parquetFiles, err := findParquetFilesMulti(roots)
-	if err != nil {
-		log.Fatalf("scan parquet files: %v", err)
-	}
-	log.Printf("Found %d parquet files under %s", len(parquetFiles), strings.Join(roots, ","))
-
-	db, err := openDuckDB(parquetFiles)
-	if err != nil {
-		log.Fatalf("open duckdb: %v", err)
-	}
-	defer db.Close()
+	log.Printf("Viewer data roots: %s", strings.Join(roots, ","))
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/games", func(w http.ResponseWriter, r *http.Request) {
@@ -104,6 +116,13 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		db, err := openDuckDBForRoots(roots)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
 		limit := parseIntQuery(r, "limit", 200)
 		offset := parseIntQuery(r, "offset", 0)
 		sortKey := strings.TrimSpace(r.URL.Query().Get("sort"))
@@ -130,6 +149,13 @@ func main() {
 			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 			return
 		}
+		db, err := openDuckDBForRoots(roots)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
 		// /api/games/{id}/turns
 		rest := strings.TrimPrefix(r.URL.Path, "/api/games/")
 		parts := strings.Split(rest, "/")
@@ -152,6 +178,44 @@ func main() {
 			return
 		}
 		writeJSON(w, turns)
+	})
+
+	mux.HandleFunc("/api/stats", func(w http.ResponseWriter, r *http.Request) {
+		withCORS(w, r)
+		if r.Method == http.MethodOptions {
+			return
+		}
+		if r.Method != http.MethodGet {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+
+		fromNs := parseInt64Query(r, "from_ns", 0)
+		toNs := parseInt64Query(r, "to_ns", 0)
+		bucketNs := parseInt64Query(r, "bucket_ns", 5*60*1_000_000_000)
+		if bucketNs <= 0 {
+			bucketNs = 5 * 60 * 1_000_000_000
+		}
+		if fromNs <= 0 || toNs <= 0 || toNs <= fromNs {
+			// Default: last 24h.
+			nowNs := time.Now().UnixNano()
+			toNs = nowNs
+			fromNs = nowNs - int64(24*time.Hour)
+		}
+
+		db, err := openDuckDBForRoots(roots)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer db.Close()
+
+		points, err := queryStats(r.Context(), db, fromNs, toNs, bucketNs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		writeJSON(w, StatsResponse{FromNs: fromNs, ToNs: toNs, BucketNs: bucketNs, Points: points})
 	})
 
 	if strings.TrimSpace(*staticDir) != "" {
@@ -256,6 +320,18 @@ func parseIntQuery(r *http.Request, key string, def int) int {
 	return n
 }
 
+func parseInt64Query(r *http.Request, key string, def int64) int64 {
+	v := strings.TrimSpace(r.URL.Query().Get(key))
+	if v == "" {
+		return def
+	}
+	n, err := strconv.ParseInt(v, 10, 64)
+	if err != nil {
+		return def
+	}
+	return n
+}
+
 func findParquetFiles(root string) ([]string, error) {
 	root = strings.TrimSpace(root)
 	if root == "" {
@@ -306,6 +382,14 @@ func findParquetFilesMulti(roots []string) ([]string, error) {
 	return out, nil
 }
 
+func openDuckDBForRoots(roots []string) (*sql.DB, error) {
+	parquetFiles, err := findParquetFilesMulti(roots)
+	if err != nil {
+		return nil, err
+	}
+	return openDuckDB(parquetFiles)
+}
+
 func openDuckDB(parquetFiles []string) (*sql.DB, error) {
 	db, err := sql.Open("duckdb", ":memory:")
 	if err != nil {
@@ -313,7 +397,8 @@ func openDuckDB(parquetFiles []string) (*sql.DB, error) {
 	}
 	// Basic pragmas; ignore errors for compatibility across versions.
 	_, _ = db.Exec("PRAGMA threads=4")
-	_, _ = db.Exec("PRAGMA enable_object_cache=true")
+	// Disable DuckDB's object cache so API responses reflect on-disk changes.
+	_, _ = db.Exec("PRAGMA enable_object_cache=false")
 
 	// Create a view over all parquet shards.
 	if len(parquetFiles) == 0 {
@@ -498,7 +583,174 @@ func queryGames(ctx context.Context, db *sql.DB, roots []string, limit int, offs
 		g.SourceFile = makeRelativeToRoots(file, roots)
 		out = append(out, g)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(out) == 0 {
+		return out, nil
+	}
+
+	gameIDs := make([]string, 0, len(out))
+	for _, g := range out {
+		gameIDs = append(gameIDs, g.GameID)
+	}
+	results, err := queryGameResults(ctx, db, gameIDs)
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Results = results[out[i].GameID]
+	}
+	return out, nil
+}
+
+func queryGameResults(ctx context.Context, db *sql.DB, gameIDs []string) (map[string]string, error) {
+	if len(gameIDs) == 0 {
+		return map[string]string{}, nil
+	}
+	args := make([]any, 0, len(gameIDs))
+	placeholders := make([]string, 0, len(gameIDs))
+	for _, id := range gameIDs {
+		placeholders = append(placeholders, "?")
+		args = append(args, id)
+	}
+
+	query := `WITH last_turn AS (
+		SELECT game_id, snakes
+		FROM (
+			SELECT
+				game_id,
+				snakes,
+				row_number() OVER (PARTITION BY game_id ORDER BY turn DESC) AS rn
+			FROM turns
+			WHERE game_id IN (` + strings.Join(placeholders, ",") + `)
+		)
+		WHERE rn = 1
+	)
+	SELECT game_id, snakes FROM last_turn`
+
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make(map[string]string, len(gameIDs))
+	for rows.Next() {
+		var gameID string
+		var snakesAny any
+		if err := rows.Scan(&gameID, &snakesAny); err != nil {
+			return nil, err
+		}
+		snakes := asSnakes(snakesAny)
+		out[gameID] = formatSnakeResults(snakes)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func formatSnakeResults(snakes []Snake) string {
+	if len(snakes) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(snakes))
+	for i, s := range snakes {
+		letter := string(rune('A' + (i % 26)))
+		val := strconv.FormatFloat(float64(s.Value), 'f', -1, 32)
+		parts = append(parts, letter+":"+val)
+	}
+	return strings.Join(parts, " ")
+}
+
+func queryStats(ctx context.Context, db *sql.DB, fromNs int64, toNs int64, bucketNs int64) ([]StatsPoint, error) {
+	query := `WITH games AS (
+		SELECT
+			game_id,
+			CASE WHEN starts_with(game_id, 'selfplay_') THEN 'selfplay' ELSE 'scraped' END AS kind,
+			COALESCE(
+				try_cast(regexp_extract(game_id, '^selfplay_([0-9]+)_', 1) AS BIGINT),
+				try_cast(regexp_extract(MIN(filename), 'batch_([0-9]+)\\.parquet', 1) AS BIGINT),
+				try_cast(regexp_extract(MIN(filename), 'batch_([0-9]+)', 1) AS BIGINT)
+			) AS ts_ns,
+			MIN(turn)::BIGINT AS min_turn,
+			MAX(turn)::BIGINT AS max_turn,
+			(MAX(turn) - MIN(turn) + 1)::BIGINT AS turn_count
+		FROM turns
+		GROUP BY game_id
+	),
+	filtered AS (
+		SELECT *
+		FROM games
+		WHERE ts_ns IS NOT NULL
+			AND ts_ns >= ?
+			AND ts_ns <= ?
+	),
+	last_turn AS (
+		SELECT t.game_id, t.snakes
+		FROM turns t
+		JOIN filtered g ON g.game_id = t.game_id AND t.turn = g.max_turn
+	),
+	alive_counts AS (
+		SELECT game_id,
+			SUM(CASE WHEN s.alive THEN 1 ELSE 0 END)::BIGINT AS alive_count
+		FROM last_turn, UNNEST(snakes) AS u(s)
+		GROUP BY game_id
+	),
+	joined AS (
+		SELECT
+			f.game_id,
+			f.kind,
+			f.ts_ns,
+			f.turn_count,
+			COALESCE(a.alive_count, 0)::BIGINT AS alive_count,
+			(? + floor((f.ts_ns - ?)::DOUBLE / ?::DOUBLE) * ?)::BIGINT AS bucket_start_ns
+		FROM filtered f
+		LEFT JOIN alive_counts a ON a.game_id = f.game_id
+	)
+	SELECT
+		bucket_start_ns,
+		SUM(CASE WHEN kind = 'selfplay' THEN 1 ELSE 0 END)::BIGINT AS selfplay_games,
+		SUM(CASE WHEN kind = 'selfplay' THEN turn_count ELSE 0 END)::BIGINT AS selfplay_total_turns,
+		SUM(CASE WHEN kind = 'selfplay' AND alive_count = 1 THEN 1 ELSE 0 END)::BIGINT AS selfplay_wins,
+		SUM(CASE WHEN kind = 'selfplay' AND alive_count <> 1 THEN 1 ELSE 0 END)::BIGINT AS selfplay_draws,
+		SUM(CASE WHEN kind = 'scraped' THEN 1 ELSE 0 END)::BIGINT AS scraped_games,
+		SUM(CASE WHEN kind = 'scraped' THEN turn_count ELSE 0 END)::BIGINT AS scraped_total_turns,
+		SUM(CASE WHEN kind = 'scraped' AND alive_count = 1 THEN 1 ELSE 0 END)::BIGINT AS scraped_wins,
+		SUM(CASE WHEN kind = 'scraped' AND alive_count <> 1 THEN 1 ELSE 0 END)::BIGINT AS scraped_draws
+	FROM joined
+	GROUP BY bucket_start_ns
+	ORDER BY bucket_start_ns ASC`
+
+	rows, err := db.QueryContext(ctx, query, fromNs, toNs, fromNs, fromNs, bucketNs, bucketNs)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	points := make([]StatsPoint, 0, 1024)
+	for rows.Next() {
+		var p StatsPoint
+		if err := rows.Scan(
+			&p.TNs,
+			&p.SelfplayGames,
+			&p.SelfplayTotalTurns,
+			&p.SelfplayWins,
+			&p.SelfplayDraws,
+			&p.ScrapedGames,
+			&p.ScrapedTotalTurns,
+			&p.ScrapedWins,
+			&p.ScrapedDraws,
+		); err != nil {
+			return nil, err
+		}
+		points = append(points, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return points, nil
 }
 
 func queryTurns(ctx context.Context, db *sql.DB, gameID string) ([]Turn, error) {
@@ -658,9 +910,7 @@ func asSnakes(v any) []Snake {
 	if !ok {
 		if l2, ok2 := v.([]interface{}); ok2 {
 			list = make([]any, len(l2))
-			for i := range l2 {
-				list[i] = l2[i]
-			}
+			copy(list, l2)
 		} else {
 			return nil
 		}
