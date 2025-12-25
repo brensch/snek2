@@ -7,6 +7,16 @@ set -euo pipefail
 
 cd "$(dirname "${BASH_SOURCE[0]}")/../.."
 
+mkdir -p logs
+start_ts=$(date -u +"%Y%m%d_%H%M%S")
+log_file="logs/orchestrate_local_${start_ts}.log"
+ln -sf "$(basename "${log_file}")" logs/orchestrate_local_latest.log
+exec > >(tee -a "${log_file}") 2>&1
+
+# When output is piped through tee, Python defaults to block-buffering.
+# Force unbuffered mode so epoch logs show up promptly.
+export PYTHONUNBUFFERED=1
+
 : "${GENERATED_DIR:=data/generated}"
 : "${SCRAPED_DIR:=data/scraped}"
 : "${PROCESSED_DIR:=processed}"
@@ -36,10 +46,6 @@ mkdir -p "${GENERATED_DIR}" "${SCRAPED_DIR}" "${PROCESSED_DIR}/generated" "${PRO
 if [[ ! -f "${MODEL_DIR}/latest.pt" ]]; then
   echo "[startup] missing ${MODEL_DIR}/latest.pt; initializing"
   make init-ckpt
-fi
-if [[ ! -e "${MODEL_DIR}/snake_net.onnx" ]]; then
-  echo "[startup] missing ${MODEL_DIR}/snake_net.onnx; exporting from latest.pt"
-  make export-onnx
 fi
 
 if [[ "${ARCHIVE_EXISTING_ON_START}" == "1" ]]; then
@@ -103,6 +109,14 @@ while true; do
     # Update pointers for next generation round.
     ln -sf "$(realpath --relative-to="${MODEL_DIR}" "${ckpt_path}" 2>/dev/null || echo "${ckpt_path}")" "${MODEL_DIR}/latest.pt"
     ln -sf "$(realpath --relative-to="${MODEL_DIR}" "${onnx_path}" 2>/dev/null || echo "${onnx_path}")" "${MODEL_DIR}/snake_net.onnx"
+  fi
+
+  # Ensure we have an ONNX to generate with.
+  # (We do this here, after the optional train+export, to avoid exporting
+  # before training on cycle 1.)
+  if [[ ! -e "${MODEL_DIR}/snake_net.onnx" ]]; then
+    echo "[cycle ${cycle}] missing ${MODEL_DIR}/snake_net.onnx; exporting from latest.pt"
+    make export-onnx
   fi
 
   echo "[cycle ${cycle}] generating ${GENERATE_GAMES} games"

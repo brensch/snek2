@@ -19,6 +19,8 @@ MAX_GAMES ?= 0
 MCTS_SIMS ?= 800
 TRACE ?= true
 
+EXECUTOR_BIN ?= bin/executor
+
 all:
 
 init:
@@ -41,11 +43,11 @@ install-onnx:
 	rm -rf onnxruntime-linux-x64-gpu-1.23.2.tgz onnxruntime-linux-x64-gpu-1.23.2
 
 run-py: $(VENV_DIR)
-	$(PYTHON) trainer/server.py
+	PYTHONUNBUFFERED=1 $(PYTHON) -u trainer/server.py
 
 run-go:
 	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
-	go run ./executor \
+	$(EXECUTOR_BIN) \
 		-workers $(WORKERS) \
 		-trace=$(TRACE) \
 		-mcts-sims $(MCTS_SIMS) \
@@ -53,11 +55,15 @@ run-go:
 		-onnx-batch-size $(ONNX_BATCH_SIZE) \
 		-onnx-batch-timeout $(ONNX_BATCH_TIMEOUT)
 
+$(EXECUTOR_BIN):
+	@mkdir -p $(@D)
+	go build -o $(EXECUTOR_BIN) ./executor
+
 train: $(VENV_DIR)
-	$(PYTHON) trainer/train.py $(ARGS)
+	PYTHONUNBUFFERED=1 $(PYTHON) -u trainer/train.py $(ARGS)
 
 export-onnx: $(VENV_DIR)
-	$(PYTHON) trainer/export_onnx.py --in-channels 10 --dtype fp16-f32io --out models/snake_net_fp16_f32io.onnx
+	PYTHONUNBUFFERED=1 $(PYTHON) -u trainer/export_onnx.py --in-channels 10 --dtype fp16-f32io --out models/snake_net_fp16_f32io.onnx
 	ln -sf snake_net_fp16_f32io.onnx models/snake_net.onnx
 
 # Export ONNX from a specific checkpoint.
@@ -66,10 +72,10 @@ export-onnx: $(VENV_DIR)
 export-onnx-ckpt: $(VENV_DIR)
 	@test -n "$(CKPT)" || (echo "CKPT is required" && exit 2)
 	@test -n "$(OUT)" || (echo "OUT is required" && exit 2)
-	$(PYTHON) trainer/export_onnx.py --in-channels 10 --dtype fp16-f32io --ckpt "$(CKPT)" --out "$(OUT)"
+	PYTHONUNBUFFERED=1 $(PYTHON) -u trainer/export_onnx.py --in-channels 10 --dtype fp16-f32io --ckpt "$(CKPT)" --out "$(OUT)"
 
 init-ckpt: $(VENV_DIR)
-	$(PYTHON) trainer/init_ckpt.py --out models/latest.pt --in-channels 10
+	PYTHONUNBUFFERED=1 $(PYTHON) -u trainer/init_ckpt.py --out models/latest.pt --in-channels 10
 
 reset:
 	rm -f models/latest.pt models_bak/latest.pt models/snake_net_fp16_f32io.onnx models/snake_net.onnx
@@ -79,11 +85,11 @@ bootstrap: reset init-ckpt export-onnx
 	$(MAKE) generate WORKERS=32 GAMES_PER_FLUSH=10 MAX_GAMES=200 MCTS_SIMS=64 TRACE=false
 	$(MAKE) train ARGS="--epochs 1 --data-dir data/generated --model-path models/latest.pt"
 
-generate:
+generate: $(EXECUTOR_BIN)
 	@mkdir -p $(OUT_DIR)
 	@echo "Running executor with: WORKERS=$(WORKERS) ONNX_SESSIONS=$(ONNX_SESSIONS) ONNX_BATCH_SIZE=$(ONNX_BATCH_SIZE) ONNX_BATCH_TIMEOUT=$(ONNX_BATCH_TIMEOUT) MCTS_SIMS=$(MCTS_SIMS) MAX_GAMES=$(MAX_GAMES)"
 	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
-	go run ./executor \
+	$(EXECUTOR_BIN) \
 		-out-dir $(OUT_DIR) \
 		-workers $(WORKERS) \
 		-games-per-flush $(GAMES_PER_FLUSH) \

@@ -4,6 +4,16 @@ set -euo pipefail
 # Orchestrates: train -> export onnx -> selfplay generate -> repeat.
 # Scraper runs as a separate compose service and continuously writes to data/scraped.
 
+mkdir -p logs
+start_ts=$(date -u +"%Y%m%d_%H%M%S")
+log_file="logs/orchestrate_${start_ts}.log"
+ln -sf "$(basename "${log_file}")" logs/orchestrate_latest.log
+exec > >(tee -a "${log_file}") 2>&1
+
+# When output is piped through tee, Python defaults to block-buffering.
+# Force unbuffered mode so epoch logs show up promptly.
+export PYTHONUNBUFFERED=1
+
 : "${GENERATED_DIR:=data/generated}"
 : "${SCRAPED_DIR:=data/scraped}"
 : "${PROCESSED_DIR:=processed}"
@@ -64,10 +74,6 @@ mkdir -p "${GENERATED_DIR}" "${SCRAPED_DIR}" "${PROCESSED_DIR}/generated" "${PRO
 if [[ ! -f "${MODEL_DIR}/latest.pt" ]]; then
   echo "[startup] missing ${MODEL_DIR}/latest.pt; initializing"
   "${PYTHON_BIN}" trainer/init_ckpt.py --out "${MODEL_DIR}/latest.pt" --in-channels 10
-fi
-if [[ ! -f "${MODEL_DIR}/snake_net.onnx" ]]; then
-  echo "[startup] missing ${MODEL_DIR}/snake_net.onnx; exporting from latest.pt"
-  "${PYTHON_BIN}" trainer/export_onnx.py --ckpt "${MODEL_DIR}/latest.pt" --out "${MODEL_DIR}/snake_net.onnx"
 fi
 
 if [[ "${ARCHIVE_EXISTING_ON_START}" == "1" ]]; then
@@ -185,6 +191,14 @@ while true; do
     else
       ln -sf "${onnx_path}" "${MODEL_DIR}/snake_net.onnx"
     fi
+  fi
+
+  # Ensure we have an ONNX to generate with.
+  # (We do this here, after the optional train+export, to avoid exporting
+  # before training on cycle 1.)
+  if [[ ! -f "${MODEL_DIR}/snake_net.onnx" ]]; then
+    echo "[cycle ${cycle}] missing ${MODEL_DIR}/snake_net.onnx; exporting from latest.pt"
+    "${PYTHON_BIN}" trainer/export_onnx.py --ckpt "${MODEL_DIR}/latest.pt" --out "${MODEL_DIR}/snake_net.onnx"
   fi
 
   echo "[cycle ${cycle}] generating ${GENERATE_GAMES} games using ${MODEL_DIR}/snake_net.onnx"

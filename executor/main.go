@@ -195,7 +195,7 @@ func main() {
 		(*onnxBatchTimeout).String(),
 		modelPath,
 	)
-	log.Printf("Args: %q", os.Args)
+	// Args logging is noisy and not useful for normal runs.
 
 	var predictor mcts.Predictor
 	var closer interface{ Close() error }
@@ -301,7 +301,6 @@ func main() {
 		workerWG.Add(1)
 		go func(workerId int) {
 			defer workerWG.Done()
-			log.Printf("Worker %d started", workerId)
 			doTrace := *trace && workerId == 0
 			for {
 				select {
@@ -345,9 +344,12 @@ func main() {
 				if out.Completed {
 					total := completedGames.Add(1)
 					totalGames.Store(total)
-					log.Printf("finished game number %d", total)
+					if *maxGames > 0 {
+						log.Printf("Game finished: %d/%d", total, *maxGames)
+					}
 					if len(out.Rows) > 0 {
 						writeReqs <- gameWriteRequest{rows: out.Rows}
+						// Keep the updates channel for future UI; don't spam logs per game.
 						select {
 						case updates <- GameUpdate{WorkerID: workerId, Result: out.Result, Examples: len(out.Rows)}:
 						default:
@@ -389,51 +391,54 @@ func main() {
 
 	// Temporary replacement for TUI to debug errors
 	startTime := time.Now()
-	ticker := time.NewTicker(1 * time.Second)
+	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 
 	for {
 		select {
 		case <-ctx.Done():
-			log.Printf("Shutdown requested; waiting for workers to finish current games...")
 			<-workersDone
 			inflight := collectInflight(inflightCh)
 			if err := saveOrClearInflight(*inflightPath, inflight); err != nil {
 				log.Printf("Failed to persist inflight games: %v", err)
-			} else {
-				log.Printf("Persisted %d in-flight games to %s", len(inflight), *inflightPath)
 			}
 			_ = os.Remove(claimedPath)
 			close(writeReqs)
 			<-writerDone
-			log.Printf("Shutdown complete: final parquet flush done (games=%d)", completedGames.Load())
 			return
 		case <-workersDone:
 			// Normal completion (e.g., -max-games reached).
 			inflight := collectInflight(inflightCh)
 			if err := saveOrClearInflight(*inflightPath, inflight); err != nil {
 				log.Printf("Failed to persist inflight games: %v", err)
-			} else {
-				log.Printf("Persisted %d in-flight games to %s", len(inflight), *inflightPath)
 			}
 			_ = os.Remove(claimedPath)
 			close(writeReqs)
 			<-writerDone
-			log.Printf("Shutdown complete: final parquet flush done (games=%d)", completedGames.Load())
 			return
-		case update := <-updates:
-			log.Printf("Worker %d: Winner %s, Steps %d, Ex %d", update.WorkerID, update.Result.WinnerId, update.Result.Steps, update.Examples)
+		case <-updates:
+			// Drain updates silently (kept for potential UI).
 		case <-ticker.C:
 			duration := time.Since(startTime)
 			moves := totalMoves.Load()
 			inferences := totalInferences.Load()
 			movesPerSec := float64(moves) / duration.Seconds()
 			infPerSec := float64(inferences) / duration.Seconds()
+			games := completedGames.Load()
 			if sp, ok := statsProvider.(interface{ Stats() inference.RuntimeStats }); ok {
 				st := sp.Stats()
-				log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f | batch cfg=%d timeout=%.2fms avg=%.1f last=%d q=%d run avg=%.2fms", movesPerSec, infPerSec, st.ConfigBatchSize, st.ConfigBatchTimeoutMs, st.AvgBatchSize, st.LastBatchSize, st.QueueLen, st.AvgRunMs)
+				log.Printf(
+					"Stats: games=%d moves/s=%.0f inf/s=%.0f q=%d batch(avg=%.1f last=%d) run_avg=%.1fms",
+					games,
+					movesPerSec,
+					infPerSec,
+					st.QueueLen,
+					st.AvgBatchSize,
+					st.LastBatchSize,
+					st.AvgRunMs,
+				)
 			} else {
-				log.Printf("Stats: Moves/s: %.2f, Inf/s: %.2f", movesPerSec, infPerSec)
+				log.Printf("Stats: games=%d moves/s=%.0f inf/s=%.0f", games, movesPerSec, infPerSec)
 			}
 		}
 	}
@@ -462,7 +467,7 @@ func parquetWriterLoop(outDir string, gamesPerFlush int, in <-chan gameWriteRequ
 		if err != nil {
 			log.Printf("Parquet flush failed (games=%d rows=%d): %v", pendingGames, len(pendingRows), err)
 		} else {
-			log.Printf("Parquet flush ok: %s (games=%d rows=%d)", outPath, pendingGames, len(pendingRows))
+			_ = outPath
 		}
 
 		pendingRows = pendingRows[:0]
@@ -475,7 +480,7 @@ func parquetWriterLoop(outDir string, gamesPerFlush int, in <-chan gameWriteRequ
 			log.Printf("Parquet final flush failed (games=%d rows=%d): %v", pendingGames, len(pendingRows), err)
 			return
 		}
-		log.Printf("Parquet final flush ok: %s (games=%d rows=%d)", outPath, pendingGames, len(pendingRows))
+		_ = outPath
 	}
 }
 
