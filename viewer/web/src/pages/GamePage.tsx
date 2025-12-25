@@ -402,16 +402,23 @@ export default function GamePage() {
               <div style={{ color: '#666', fontSize: 12, marginBottom: 6 }}>
                 sims: {mctsAll.sims} · cpuct: {mctsAll.cpuct} · depth: {mctsAll.depth}
               </div>
+        <div style={{ color: '#666', fontSize: 12, marginBottom: 10 }}>
+        MCTS explorer re-runs MCTS using the current ONNX model. The “Snakes” section below shows the recorded move/probs
+        stored in the parquet for this game (which may have been generated with a different model).
+        </div>
 
               {(mctsAll.snakes ?? []).map((s) => {
                 const { head } = snakeLetters(s.snake_idx)
                 const chosen = mctsMoves[s.snake_id]
+				const recorded = current.snakes[s.snake_idx]
+				const recordedMove = recorded && typeof recorded.policy === 'number' && recorded.policy >= 0 ? fmtMoveName(recorded.policy) : '—'
                 return (
                   <div key={s.snake_id} style={{ marginBottom: 12 }}>
                     <div style={{ marginBottom: 6, fontSize: 12 }}>
                       <strong>{head}</strong> — {s.snake_id}
                       {typeof chosen === 'number' ? ` · chosen: ${fmtMoveName(chosen)}` : ''}
                       {typeof s.best_move === 'number' && s.best_move >= 0 ? ` · best: ${fmtMoveName(s.best_move)}` : ''}
+					  {` · recorded: ${recordedMove}`}
                     </div>
                     {s.root ? (
                       <MctsCross
