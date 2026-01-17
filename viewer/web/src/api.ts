@@ -49,6 +49,15 @@ export type Snake = {
   value: number
 }
 
+// JointChildSummary represents a joint action explored at the MCTS root
+export type JointChildSummary = {
+  moves: Record<string, number>  // snakeID -> move
+  n: number                      // visit count
+  value_sum: number
+  q: number                      // average value
+  p: number                      // joint prior
+}
+
 export type Turn = {
   game_id: string
   turn: number
@@ -58,6 +67,10 @@ export type Turn = {
   hazards: Point[]
   snakes: Snake[]
   source: string
+  // Model path (resolved, present in selfplay games)
+  model_path?: string
+  // MCTS root children summary (present in selfplay games)
+  mcts_root?: JointChildSummary[]
 }
 
 export type MctsMove = {
@@ -170,16 +183,24 @@ export async function simulateTurn(state: Turn, moves: Record<string, number>): 
 
 // Debug game types
 
-// Unified MCTS node - each child represents ALL snakes making moves together
+// Alternating MCTS node - each node represents ONE snake's move decision
 export type DebugMCTSNode = {
-  // Joint moves - all snakes' moves for this action (null for root)
+  // Moves - for alternating tree, this is just {snakeID: move}
   moves?: Record<string, number>
   
   n: number
   value_sum: number
   q: number
-  p: number  // Joint prior (product of individual priors)
+  p: number  // Prior probability for this move
   ucb: number
+  
+  // SnakeID is the snake whose turn it is at this node
+  snake_id?: string
+  
+  // SnakeIndex is the position in the snake order (0, 1, 2, ...)
+  snake_index: number
+  
+  // State is only set at the start of each round (when all snakes have moved)
   state?: DebugGameState
   
   // Per-snake priors at this node
@@ -189,7 +210,6 @@ export type DebugMCTSNode = {
   
   // Legacy fields for old format compatibility
   move?: number
-  snake_id?: string
   is_resolved?: boolean
   pending_moves?: Record<string, number>
   next_snake?: string
@@ -261,4 +281,30 @@ export async function fetchDebugGame(gameId: string): Promise<DebugGameResponse>
   const res = await fetch(`/api/debug_games/${encodeURIComponent(gameId)}`)
   if (!res.ok) throw new Error(await res.text())
   return (await res.json()) as DebugGameResponse
+}
+
+// Run inference request/response types
+export type RunInferenceRequest = {
+  game_id: string
+  turn: number
+  sims: number
+}
+
+export type RunInferenceResponse = {
+  game_id: string
+  turn: number
+  sims: number
+  snake_order: string[]
+  state: DebugGameState
+  tree: DebugMCTSNode
+}
+
+export async function runInference(req: RunInferenceRequest): Promise<RunInferenceResponse> {
+  const res = await fetch('/api/run_inference', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) throw new Error(await res.text())
+  return (await res.json()) as RunInferenceResponse
 }

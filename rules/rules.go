@@ -79,6 +79,87 @@ func isSafe(state *game.GameState, p game.Point, myBody []game.Point) bool {
 	return true
 }
 
+// isSafeWithTailDecrement is like isSafe but excludes tail positions that will move away.
+// A tail will move away unless the snake "stacked" (ate food previous turn, so last two body segments are same position).
+func isSafeWithTailDecrement(state *game.GameState, p game.Point, myBody []game.Point) bool {
+	// 1. Check Bounds
+	if p.X < 0 || p.X >= state.Width || p.Y < 0 || p.Y >= state.Height {
+		return false
+	}
+
+	// 2. Check Collisions with Snakes (excluding tails that will move)
+	for _, s := range state.Snakes {
+		if s.Health <= 0 {
+			continue
+		}
+		bodyLen := len(s.Body)
+		for i, bp := range s.Body {
+			if p.X == bp.X && p.Y == bp.Y {
+				// Check if this is the tail and if it will move away
+				if i == bodyLen-1 && bodyLen >= 2 {
+					// Tail will move away UNLESS it's stacked (last two segments are same position)
+					secondLast := s.Body[bodyLen-2]
+					if bp.X == secondLast.X && bp.Y == secondLast.Y {
+						// Stacked tail (snake ate food) - tail stays, so collision
+						return false
+					}
+					// Tail will move away - this position is safe
+					continue
+				}
+				return false
+			}
+		}
+	}
+
+	// 3. Neck check (don't move backwards into own neck)
+	if len(myBody) > 1 {
+		neck := myBody[1]
+		if p.X == neck.X && p.Y == neck.Y {
+			return false
+		}
+	}
+
+	return true
+}
+
+// GetLegalMovesWithTailDecrement returns legal moves accounting for the fact that
+// all snake tails will move away this turn (unless stacked from eating).
+// This is the correct view for MCTS expansion where snakes move simultaneously.
+func GetLegalMovesWithTailDecrement(state *game.GameState) []int {
+	var you *game.Snake
+	for i := range state.Snakes {
+		if state.Snakes[i].Id == state.YouId {
+			you = &state.Snakes[i]
+			break
+		}
+	}
+
+	if you == nil || you.Health <= 0 {
+		return []int{}
+	}
+
+	head := you.Body[0]
+	moves := []int{}
+
+	candidates := []struct {
+		move int
+		p    game.Point
+	}{
+		{MoveUp, game.Point{X: head.X, Y: head.Y + 1}},
+		{MoveDown, game.Point{X: head.X, Y: head.Y - 1}},
+		{MoveLeft, game.Point{X: head.X - 1, Y: head.Y}},
+		{MoveRight, game.Point{X: head.X + 1, Y: head.Y}},
+	}
+
+	for _, c := range candidates {
+		if isSafeWithTailDecrement(state, c.p, you.Body) {
+			moves = append(moves, c.move)
+		}
+	}
+
+	return moves
+}
+
 // NextState returns the next state after applying a move for YouId
 // Note: This currently only moves "You". Enemies are static.
 // This is used primarily for MCTS expansion where we might not know enemy moves.

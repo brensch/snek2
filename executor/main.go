@@ -186,14 +186,21 @@ func main() {
 		log.Fatalf("Model file not found: %s. Run `make export-onnx` first.", modelPath)
 	}
 
+	// Resolve symlink to get the actual model file path
+	resolvedModelPath := modelPath
+	if resolved, err := filepath.EvalSymlinks(modelPath); err == nil {
+		resolvedModelPath = resolved
+	}
+
 	log.Printf(
-		"Config: workers=%d mcts_sims=%d onnx_sessions=%d onnx_batch_size=%d onnx_batch_timeout=%s model=%s",
+		"Config: workers=%d mcts_sims=%d onnx_sessions=%d onnx_batch_size=%d onnx_batch_timeout=%s model=%s (resolved: %s)",
 		*workers,
 		*mctsSims,
 		*onnxSessions,
 		*onnxBatchSize,
 		(*onnxBatchTimeout).String(),
 		modelPath,
+		resolvedModelPath,
 	)
 	// Args logging is noisy and not useful for normal runs.
 
@@ -338,6 +345,7 @@ func main() {
 					selfplay.PlayGameOptions{
 						Resume:        resume,
 						StopRequested: func() bool { return shouldStop() },
+						ModelPath:     resolvedModelPath,
 					},
 				)
 

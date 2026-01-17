@@ -78,6 +78,15 @@ type ArchiveTurnRow struct {
 	Snakes []ArchiveSnake `parquet:"snakes"`
 
 	Source string `parquet:"source,dict"`
+
+	// ModelPath is the resolved path to the ONNX model used to generate this game.
+	// Symlinks are resolved to show the actual model file.
+	ModelPath string `parquet:"model_path,dict,optional"`
+
+	// MCTSRootJSON stores a summary of the MCTS root children (joint actions explored).
+	// Format: JSON array of {moves: {snakeID: move}, n: visitCount, q: qValue, p: prior}
+	// This allows replaying/debugging without the full tree.
+	MCTSRootJSON []byte `parquet:"mcts_root_json,optional,zstd"`
 }
 
 type ArchiveSnake struct {

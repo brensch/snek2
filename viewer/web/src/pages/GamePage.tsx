@@ -2,13 +2,11 @@ import { useEffect, useMemo, useState, type CSSProperties } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import {
   fetchGameTurns,
-  fetchMctsAll,
-  simulateTurn,
-  type MctsAllResponse,
-  type MctsMove,
-  type MctsNode,
+  runInference,
   type Snake,
   type Turn,
+  type RunInferenceResponse,
+  type DebugMCTSNode,
 } from '../api'
 import { renderAsciiBoard, snakeLetters } from '../board'
 
@@ -102,93 +100,149 @@ function PolicyCross({ snake }: { snake: Snake }) {
   )
 }
 
-function fmtMoveName(m: number): string {
-  switch (m) {
-    case 0:
-      return 'Up'
-    case 1:
-      return 'Down'
-    case 2:
-      return 'Left'
-    case 3:
-      return 'Right'
-    default:
-      return 'Unknown'
+// Render a DebugGameState as ASCII board
+function renderNodeState(
+  state: { width: number; height: number; food: { x: number; y: number }[]; snakes: { id: string; body: { x: number; y: number }[] }[] },
+  originalSnakes: { id: string }[]
+): string {
+  const w = state.width
+  const h = state.height
+  if (w <= 0 || h <= 0) return ''
+
+  const grid: string[][] = Array.from({ length: h }, () => Array.from({ length: w }, () => '.'))
+
+  for (const p of state.food ?? []) {
+    if (p.x >= 0 && p.x < w && p.y >= 0 && p.y < h) grid[p.y][p.x] = 'F'
   }
+
+  ;(state.snakes ?? []).forEach((s) => {
+    // Find the index in the original snakes array for consistent lettering
+    const origIdx = originalSnakes.findIndex((os) => os.id === s.id)
+    const head = origIdx >= 0 ? String.fromCharCode('A'.charCodeAt(0) + origIdx) : '?'
+    const body = origIdx >= 0 ? String.fromCharCode('a'.charCodeAt(0) + origIdx) : '?'
+    ;(s.body ?? []).forEach((p, j) => {
+      if (p.x < 0 || p.x >= w || p.y < 0 || p.y >= h) return
+      grid[p.y][p.x] = j === 0 ? head : body
+    })
+  })
+
+  // Render with y=max at top (Battlesnake coords are bottom-left).
+  const lines: string[] = []
+  for (let y = h - 1; y >= 0; y--) {
+    lines.push(grid[y].join(' '))
+  }
+  return lines.join('\n')
 }
 
-function MctsCross({
+// Snake colors for visualization
+const SNAKE_COLORS = [
+  '#4CAF50', // A - green
+  '#2196F3', // B - blue
+  '#F44336', // C - red
+  '#FF9800', // D - orange
+  '#9C27B0', // E - purple
+  '#00BCD4', // F - cyan
+]
+
+// Move names
+const MOVE_NAMES = ['Up', 'Down', 'Left', 'Right']
+
+// Alternating tree node component - shows single snake moves (each level is one snake's turn)
+function AlternatingTreeNode({
   node,
-  onPick,
+  depth,
+  turnSnakes,
+  selectedNode,
+  onSelectNode,
 }: {
-  node: MctsNode
-  onPick: (move: number) => void
+  node: DebugMCTSNode
+  depth: number
+  turnSnakes: { id: string }[] // Original snakes from the turn (to get correct letter)
+  selectedNode: DebugMCTSNode | null
+  onSelectNode: (n: DebugMCTSNode) => void
 }) {
-  const cell: CSSProperties = {
-    width: 92,
-    height: 62,
-    border: '1px solid #ddd',
-    display: 'flex',
-    flexDirection: 'column',
-    justifyContent: 'center',
-    alignItems: 'center',
-    fontSize: 12,
-    lineHeight: 1.1,
+  const [expanded, setExpanded] = useState(false) // Start collapsed
+  const hasChildren = node.children && node.children.length > 0
+
+  // Get the snake who MADE the move to reach this node (from the moves field)
+  // This is different from snake_id which is the snake whose turn it is NEXT
+  const moveSnakeId = node.moves ? Object.keys(node.moves)[0] : ''
+  const originalIdx = moveSnakeId ? turnSnakes.findIndex((s) => s.id === moveSnakeId) : -1
+  const letter = originalIdx >= 0 && originalIdx < 26 ? String.fromCharCode(65 + originalIdx) : '?'
+  const color = originalIdx >= 0 ? SNAKE_COLORS[originalIdx % SNAKE_COLORS.length] : '#999'
+
+  // Get the move made to reach this node
+  const getMove = (): string => {
+    if (!node.moves || Object.keys(node.moves).length === 0) return ''
+    // For alternating tree, there's only one entry
+    const moveVal = Object.values(node.moves)[0]
+    return MOVE_NAMES[moveVal] ?? '?'
+  }
+
+  const isRoot = depth === 0
+  const move = getMove()
+
+  // Show if this is the start of a new round (all snakes have moved)
+  const isNewRound = node.snake_index === 0 && depth > 0
+  const isSelected = selectedNode === node
+
+  const nodeStyle: CSSProperties = {
+    padding: '4px 8px',
+    margin: '2px 0',
+    border: `2px solid ${isSelected ? '#000' : color}`,
+    borderRadius: 4,
+    backgroundColor: isNewRound ? '#f0f0f0' : isSelected ? '#ffffcc' : '#fff',
     cursor: 'pointer',
-    userSelect: 'none',
-  }
-
-  const center: CSSProperties = {
-    ...cell,
-    cursor: 'default',
-    color: '#666',
     fontSize: 12,
+    display: 'inline-block',
   }
 
-  const render = (mv: MctsMove, label: string) => {
-    const disabled = !mv.exists
-    return (
-      <div
-        style={{
-          ...cell,
-          cursor: disabled ? 'not-allowed' : 'pointer',
-          opacity: mv.exists ? 1 : 0.35,
-          fontWeight: mv.exists ? 600 : 400,
-        }}
-        title={mv.exists ? `${fmtMoveName(mv.move)}\nUCB=${mv.ucb.toFixed(3)} N=${mv.n} Q=${mv.q.toFixed(3)} P=${mv.p.toFixed(3)}` : 'Illegal/unexpanded'}
-        onClick={() => {
-          if (disabled) return
-          onPick(mv.move)
-        }}
-      >
-        <div>{label}</div>
-        <div style={{ color: '#444' }}>UCB {mv.ucb.toFixed(3)}</div>
-        <div style={{ color: '#666' }}>N {mv.n} · Q {mv.q.toFixed(3)} · P {mv.p.toFixed(3)}</div>
-      </div>
-    )
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    // Always select this node to show its state
+    onSelectNode(node)
+    // Also toggle expand/collapse if it has children
+    if (hasChildren) {
+      setExpanded((exp) => !exp)
+    }
   }
-
-  const up = node.moves[0]
-  const down = node.moves[1]
-  const left = node.moves[2]
-  const right = node.moves[3]
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '92px 92px 92px', gap: 6 }}>
-      <div />
-      {render(up, 'U')}
-      <div />
-
-      {render(left, 'L')}
-      <div style={center}>
-        <div>visits {node.visit_count}</div>
-        <div>V {node.value.toFixed(3)}</div>
+    <div style={{ marginLeft: depth > 0 ? 16 : 0 }}>
+      <div
+        style={nodeStyle}
+        onClick={handleClick}
+        title={`Snake ${letter} (${moveSnakeId.slice(0, 8)}...)`}
+      >
+        {isRoot ? (
+          <strong>Root</strong>
+        ) : (
+          <>
+            <span style={{ color, fontWeight: 'bold' }}>{letter}</span>
+            →{move}
+          </>
+        )}
+        {' · '}
+        <span style={{ color: '#666' }}>
+          N={node.n} Q={node.q.toFixed(2)} P={node.p.toFixed(2)} UCB={node.ucb.toFixed(2)}
+        </span>
+        {isNewRound && <span style={{ marginLeft: 6, color: '#999', fontSize: 10 }}>↻ new round</span>}
+        {hasChildren && <span style={{ marginLeft: 8 }}>{expanded ? '▼' : '▶'}</span>}
       </div>
-      {render(right, 'R')}
-
-      <div />
-      {render(down, 'D')}
-      <div />
+      {expanded && hasChildren && (
+        <div style={{ borderLeft: `2px solid ${color}`, paddingLeft: 8 }}>
+          {node.children!.map((child, i) => (
+            <AlternatingTreeNode
+              key={i}
+              node={child}
+              depth={depth + 1}
+              turnSnakes={turnSnakes}
+              selectedNode={selectedNode}
+              onSelectNode={onSelectNode}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -202,12 +256,11 @@ export default function GamePage() {
   const [playing, setPlaying] = useState<boolean>(false)
   const [speedMs, setSpeedMs] = useState<number>(50)
 
-  const [mctsAll, setMctsAll] = useState<MctsAllResponse | null>(null)
-  const [mctsMoves, setMctsMoves] = useState<Record<string, number>>({})
-  const [mctsLoading, setMctsLoading] = useState<boolean>(false)
-  const [mctsError, setMctsError] = useState<string>('')
-  const [simTurn, setSimTurn] = useState<Turn | null>(null)
-  const [simError, setSimError] = useState<string>('')
+  // Unified tree inference state
+  const [unifiedTree, setUnifiedTree] = useState<RunInferenceResponse | null>(null)
+  const [unifiedLoading, setUnifiedLoading] = useState<boolean>(false)
+  const [unifiedError, setUnifiedError] = useState<string>('')
+  const [selectedTreeNode, setSelectedTreeNode] = useState<DebugMCTSNode | null>(null)
 
   useEffect(() => {
     if (!gameId) return
@@ -261,39 +314,12 @@ export default function GamePage() {
   const current = turns[Math.min(idx, Math.max(0, turns.length - 1))]
   const board = useMemo(() => (current ? renderAsciiBoard(current) : ''), [current])
 
-  const simBoard = useMemo(() => (simTurn ? renderAsciiBoard(simTurn) : ''), [simTurn])
-
   useEffect(() => {
-    // Reset MCTS panels when stepping turns.
-    setMctsAll(null)
-    setMctsMoves({})
-    setMctsError('')
-    setSimTurn(null)
-    setSimError('')
+    // Reset unified tree when stepping turns.
+    setUnifiedTree(null)
+    setUnifiedError('')
+    setSelectedTreeNode(null)
   }, [idx, gameId])
-
-  useEffect(() => {
-    if (!mctsAll) return
-    if (!mctsAll.state) return
-    if (!mctsAll.snakes?.length) return
-
-    let cancelled = false
-    setSimError('')
-    simulateTurn(mctsAll.state, mctsMoves)
-      .then((t) => {
-        if (cancelled) return
-        setSimTurn(t)
-      })
-      .catch((e: unknown) => {
-        if (cancelled) return
-        setSimTurn(null)
-        setSimError(e instanceof Error ? e.message : String(e))
-      })
-
-    return () => {
-      cancelled = true
-    }
-  }, [mctsAll, mctsMoves])
 
   if (!gameId) return <div>Missing game id.</div>
   if (loading) return <div>Loading…</div>
@@ -354,105 +380,40 @@ export default function GamePage() {
       </div>
 
       <div style={{ display: 'flex', gap: 16, alignItems: 'flex-start', flexWrap: 'wrap' }}>
-        <pre style={{ lineHeight: 1.2, fontSize: 14, padding: 12, border: '1px solid #ddd', overflowX: 'auto', margin: 0 }}>
-          {board}
-        </pre>
+        <div>
+          {/* Current Turn Board */}
+          <div style={{ marginBottom: 8, fontSize: 12, color: '#666' }}>Turn {current.turn}</div>
+          <pre style={{ lineHeight: 1.2, fontSize: 14, padding: 12, border: '1px solid #ddd', overflowX: 'auto', margin: 0 }}>
+            {board}
+          </pre>
 
-        <div style={{ minWidth: 260 }}>
-          <h3 style={{ margin: '0 0 8px 0' }}>MCTS explorer</h3>
-          <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
-            <button
-              disabled={mctsLoading}
-              onClick={() => {
-                if (!gameId) return
-                setMctsLoading(true)
-                setMctsError('')
-                setMctsAll(null)
-                setMctsMoves({})
-                setSimTurn(null)
-                setSimError('')
-                fetchMctsAll(gameId, current.turn, 100, 3, 1.0)
-                  .then((r) => {
-                    setMctsAll(r)
-                    const moves: Record<string, number> = {}
-                    for (const st of r.snakes ?? []) {
-                      if (!st.snake_id) continue
-                      if (typeof st.best_move === 'number' && st.best_move >= 0) {
-                        moves[st.snake_id] = st.best_move
-                      } else {
-                        moves[st.snake_id] = 0
-                      }
-                    }
-                    setMctsMoves(moves)
-                  })
-                  .catch((e: unknown) => {
-                    setMctsError(e instanceof Error ? e.message : String(e))
-                  })
-                  .finally(() => setMctsLoading(false))
-              }}
-            >
-              {mctsLoading ? 'Running…' : 'Re-run MCTS (100)'}
-            </button>
-          </div>
-
-          {mctsError ? <div style={{ whiteSpace: 'pre-wrap', marginBottom: 8 }}>Error: {mctsError}</div> : null}
-
-          {mctsAll ? (
-            <div style={{ marginBottom: 16 }}>
-              <div style={{ color: '#666', fontSize: 12, marginBottom: 6 }}>
-                sims: {mctsAll.sims} · cpuct: {mctsAll.cpuct} · depth: {mctsAll.depth}
+          {/* Selected node state visualization - below main board */}
+          {selectedTreeNode?.state ? (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ marginBottom: 8, fontSize: 12, color: '#666' }}>
+                Explored State (Turn {selectedTreeNode.state.turn})
               </div>
-        <div style={{ color: '#666', fontSize: 12, marginBottom: 10 }}>
-        MCTS explorer re-runs MCTS using the current ONNX model. The “Snakes” section below shows the recorded move/probs
-        stored in the parquet for this game (which may have been generated with a different model).
+              <pre style={{ lineHeight: 1.2, fontSize: 14, padding: 12, border: '1px solid #ddd', overflowX: 'auto', margin: 0 }}>
+                {renderNodeState(selectedTreeNode.state, current.snakes)}
+              </pre>
+            </div>
+          ) : selectedTreeNode ? (
+            <div style={{ marginTop: 16, padding: 12, border: '1px solid #ddd', color: '#999', fontSize: 12 }}>
+              Selected node has no state (intermediate move in round)
+            </div>
+          ) : null}
         </div>
 
-              {(mctsAll.snakes ?? []).map((s) => {
-                const { head } = snakeLetters(s.snake_idx)
-                const chosen = mctsMoves[s.snake_id]
-				const recorded = current.snakes[s.snake_idx]
-				const recordedMove = recorded && typeof recorded.policy === 'number' && recorded.policy >= 0 ? fmtMoveName(recorded.policy) : '—'
-                return (
-                  <div key={s.snake_id} style={{ marginBottom: 12 }}>
-                    <div style={{ marginBottom: 6, fontSize: 12 }}>
-                      <strong>{head}</strong> — {s.snake_id}
-                      {typeof chosen === 'number' ? ` · chosen: ${fmtMoveName(chosen)}` : ''}
-                      {typeof s.best_move === 'number' && s.best_move >= 0 ? ` · best: ${fmtMoveName(s.best_move)}` : ''}
-					  {` · recorded: ${recordedMove}`}
-                    </div>
-                    {s.root ? (
-                      <MctsCross
-                        node={s.root}
-                        onPick={(move) => {
-                          setMctsMoves((m) => ({ ...m, [s.snake_id]: move }))
-                        }}
-                      />
-                    ) : (
-                      <div style={{ fontSize: 12, color: '#666' }}>dead / no root</div>
-                    )}
-                  </div>
-                )
-              })}
-
-              {simError ? <div style={{ whiteSpace: 'pre-wrap', marginTop: 8 }}>Sim error: {simError}</div> : null}
-              {simBoard ? (
-                <pre
-                  style={{
-                    lineHeight: 1.2,
-                    fontSize: 14,
-                    padding: 12,
-                    border: '1px solid #ddd',
-                    overflowX: 'auto',
-                    margin: '10px 0 0 0',
-                  }}
-                >
-                  {simBoard}
-                </pre>
-              ) : null}
+        <div style={{ minWidth: 260 }}>
+          {/* Model Path (if available) */}
+          {current.model_path ? (
+            <div style={{ marginBottom: 12, fontSize: 12, color: '#666' }}>
+              <strong>Model:</strong> {current.model_path.split('/').pop()}
+              <div style={{ fontSize: 10, color: '#999', wordBreak: 'break-all' }}>{current.model_path}</div>
             </div>
           ) : null}
 
-          <h3 style={{ margin: '12px 0 8px 0' }}>Snakes</h3>
+          <h3 style={{ margin: '0 0 8px 0' }}>Snakes</h3>
           {current.snakes.map((s, i) => {
             const { head } = snakeLetters(i)
             return (
@@ -464,6 +425,49 @@ export default function GamePage() {
               </div>
             )
           })}
+
+          {/* Unified Tree Section */}
+          <h3 style={{ margin: '24px 0 8px 0' }}>Alternating MCTS Tree</h3>
+          <div style={{ color: '#666', fontSize: 12, marginBottom: 8 }}>
+            Runs MCTS where each snake takes turns (alternating). Click to expand, Shift+click to view state.
+          </div>
+          <button
+            style={{ marginBottom: 12 }}
+            disabled={unifiedLoading}
+            onClick={() => {
+              if (!gameId) return
+              setUnifiedLoading(true)
+              setUnifiedError('')
+              setSelectedTreeNode(null)
+              runInference({ game_id: gameId, turn: current.turn, sims: 100 })
+                .then((res) => {
+                  setUnifiedTree(res)
+                })
+                .catch((e: unknown) => {
+                  setUnifiedError(e instanceof Error ? e.message : String(e))
+                })
+                .finally(() => setUnifiedLoading(false))
+            }}
+          >
+            {unifiedLoading ? 'Running…' : 'Expand Alternating Tree (100 sims)'}
+          </button>
+
+          {unifiedError ? <div style={{ color: 'red', marginBottom: 8 }}>Error: {unifiedError}</div> : null}
+
+          {unifiedTree ? (
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ color: '#666', fontSize: 12, marginBottom: 6 }}>
+                sims: {unifiedTree.sims} · snakes: {current.snakes.map((s, i) => `${String.fromCharCode(65 + i)}=${s.id.slice(0, 8)}`).join(', ')}
+              </div>
+              <AlternatingTreeNode
+                node={unifiedTree.tree}
+                depth={0}
+                turnSnakes={current.snakes}
+                selectedNode={selectedTreeNode}
+                onSelectNode={setSelectedTreeNode}
+              />
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

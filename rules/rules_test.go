@@ -312,3 +312,129 @@ func TestFood_SpawnChanceCanAddExtra(t *testing.T) {
 		t.Fatalf("food len=%d want=2", len(after.Food))
 	}
 }
+
+// TestGetLegalMovesWithTailDecrement verifies that snakes can move into tail positions
+// that will be vacated by the end of the turn.
+func TestGetLegalMovesWithTailDecrement(t *testing.T) {
+	// Scenario: Snake A's head is next to Snake B's tail.
+	// With tail decrement, Snake A should be able to move into that position.
+	//
+	// Board (5x5):
+	//   . . . . .
+	//   . . . . .
+	//   . . . . .
+	//   . H b b .   <- Snake B: body at (2,1), (3,1), (4,1) - tail at (4,1)
+	//   . . H . .   <- Snake A: head at (2,0), wants to go Right into (3,0) or Up into (2,1)
+	//
+	// Without tail decrement: A cannot move Right (blocked by nothing), but cannot move Up into B's body
+	// With tail decrement: A can move Up into (2,1) because B's tail at (4,1) will move, so (2,1) becomes the new tail
+	// Wait, that doesn't make sense. Let me redo this.
+	//
+	// Actually the point is: if A's head is adjacent to B's TAIL, A can move there.
+	// Let me set up: A's head at (3,1), B's tail at (4,1)
+	//
+	// Board (5x5):
+	//   . . . . .
+	//   . . . . .
+	//   . . . . .
+	//   . . H b T   <- Snake B: head at (2,1), body (3,1), tail at (4,1)
+	//   . . . H .   <- Snake A: head at (3,0)
+	//
+	// A wants to move Up to (3,1) - this is B's body, not allowed even with tail decrement
+	// A wants to move Right to (4,0) - this is fine
+	//
+	// Better scenario: A's head adjacent to B's tail directly
+	//
+	// Board (5x5):
+	//   . . . . .
+	//   . . . . .
+	//   . . . . .
+	//   . H b T .   <- Snake B: head at (1,1), body (2,1), tail at (3,1)
+	//   . . . H .   <- Snake A: head at (3,0), wants to move Up to (3,1) which is B's tail
+	//
+	// Without tail decrement: blocked
+	// With tail decrement: allowed (B's tail will move to (2,1), freeing (3,1))
+
+	state := &game.GameState{
+		Width:  5,
+		Height: 5,
+		YouId:  "a",
+		Snakes: []game.Snake{
+			{Id: "a", Health: 100, Body: []game.Point{{X: 3, Y: 0}, {X: 2, Y: 0}, {X: 1, Y: 0}}}, // A: head at (3,0)
+			{Id: "b", Health: 100, Body: []game.Point{{X: 1, Y: 1}, {X: 2, Y: 1}, {X: 3, Y: 1}}}, // B: head at (1,1), tail at (3,1)
+		},
+		Food: []game.Point{},
+		Turn: 0,
+	}
+
+	t.Logf("Testing tail decrement:\n%s", dumpState(state))
+
+	// Without tail decrement (conservative)
+	movesConservative := GetLegalMoves(state)
+	t.Logf("GetLegalMoves (conservative): %v", movesConservative)
+
+	// With tail decrement
+	movesWithTail := GetLegalMovesWithTailDecrement(state)
+	t.Logf("GetLegalMovesWithTailDecrement: %v", movesWithTail)
+
+	// MoveUp (0) should be in movesWithTail but not in movesConservative
+	hasUpConservative := false
+	for _, m := range movesConservative {
+		if m == MoveUp {
+			hasUpConservative = true
+		}
+	}
+
+	hasUpWithTail := false
+	for _, m := range movesWithTail {
+		if m == MoveUp {
+			hasUpWithTail = true
+		}
+	}
+
+	if hasUpConservative {
+		t.Error("Conservative GetLegalMoves should NOT allow MoveUp into B's tail")
+	}
+
+	if !hasUpWithTail {
+		t.Error("GetLegalMovesWithTailDecrement SHOULD allow MoveUp into B's tail")
+	}
+}
+
+// TestGetLegalMovesWithTailDecrement_StackedTail verifies that stacked tails (from eating)
+// are NOT treated as moving away.
+func TestGetLegalMovesWithTailDecrement_StackedTail(t *testing.T) {
+	// Snake B just ate, so its last two body segments are the same (stacked tail).
+	// A should NOT be able to move into that position.
+	//
+	// Board (5x5):
+	//   . . . . .
+	//   . . . . .
+	//   . . . . .
+	//   . H b T .   <- Snake B: head at (1,1), body (2,1), tail at (3,1) BUT stacked (two at 3,1)
+	//   . . . H .   <- Snake A: head at (3,0)
+
+	state := &game.GameState{
+		Width:  5,
+		Height: 5,
+		YouId:  "a",
+		Snakes: []game.Snake{
+			{Id: "a", Health: 100, Body: []game.Point{{X: 3, Y: 0}, {X: 2, Y: 0}, {X: 1, Y: 0}}},
+			{Id: "b", Health: 100, Body: []game.Point{{X: 1, Y: 1}, {X: 2, Y: 1}, {X: 3, Y: 1}, {X: 3, Y: 1}}}, // Stacked tail!
+		},
+		Food: []game.Point{},
+		Turn: 0,
+	}
+
+	t.Logf("Testing stacked tail:\n%s", dumpState(state))
+
+	movesWithTail := GetLegalMovesWithTailDecrement(state)
+	t.Logf("GetLegalMovesWithTailDecrement: %v", movesWithTail)
+
+	// MoveUp should NOT be allowed because B's tail is stacked
+	for _, m := range movesWithTail {
+		if m == MoveUp {
+			t.Error("GetLegalMovesWithTailDecrement should NOT allow MoveUp into B's stacked tail")
+		}
+	}
+}

@@ -72,6 +72,22 @@ type Turn struct {
 	Hazards []Point `json:"hazards"`
 	Snakes  []Snake `json:"snakes"`
 	Source  string  `json:"source"`
+
+	// ModelPath is the resolved path to the ONNX model used for selfplay games.
+	ModelPath string `json:"model_path,omitempty"`
+
+	// MCTSRoot contains the summary of MCTS root children for unified search.
+	// This is present in selfplay games and can be used to show the decision.
+	MCTSRoot []JointChildSummary `json:"mcts_root,omitempty"`
+}
+
+// JointChildSummary is a compact representation of a joint action explored at the root.
+type JointChildSummary struct {
+	Moves      map[string]int `json:"moves"`     // snakeID -> move
+	VisitCount int            `json:"n"`         // Visit count
+	ValueSum   float32        `json:"value_sum"` // Sum of values
+	Q          float32        `json:"q"`         // Average value
+	PriorProb  float32        `json:"p"`         // Joint prior
 }
 
 // MCTSMove represents a possible move in the MCTS tree.
@@ -135,9 +151,9 @@ type SimulateRequest struct {
 }
 
 // DebugMCTSNode is a node in the MCTS tree for debug visualization.
-// Unified format: Each node represents ALL snakes making moves together (joint action).
+// Alternating format: Each node represents ONE snake's move decision.
 type DebugMCTSNode struct {
-	// Moves is the joint action - maps snake ID to move (0=Up, 1=Down, 2=Left, 3=Right)
+	// Moves is the action - for alternating tree, it's just {snakeID: move}
 	// nil for root node
 	Moves map[string]int `json:"moves,omitempty"`
 
@@ -147,7 +163,13 @@ type DebugMCTSNode struct {
 	PriorProb  float32 `json:"p"`
 	UCB        float32 `json:"ucb"`
 
-	// State is the game state after this joint action
+	// SnakeID is the snake whose turn it is at this node
+	SnakeID string `json:"snake_id,omitempty"`
+
+	// SnakeIndex is the position in the snake order (0, 1, 2, ...)
+	SnakeIndex int `json:"snake_index"`
+
+	// State is the game state (only set at the start of each round when all snakes have moved)
 	State *DebugGameState `json:"state,omitempty"`
 
 	// SnakePriors shows each snake's policy at this node
@@ -155,9 +177,8 @@ type DebugMCTSNode struct {
 
 	Children []*DebugMCTSNode `json:"children,omitempty"`
 
-	// Legacy fields for old V1/V2 format compatibility
+	// Legacy fields for old format compatibility
 	Move         int            `json:"move,omitempty"`
-	SnakeID      string         `json:"snake_id,omitempty"`
 	IsResolved   bool           `json:"is_resolved,omitempty"`
 	PendingMoves map[string]int `json:"pending_moves,omitempty"`
 	NextSnake    string         `json:"next_snake,omitempty"`

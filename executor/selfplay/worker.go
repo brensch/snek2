@@ -2,12 +2,11 @@ package selfplay
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"math/rand"
 	"sort"
-	"strings"
-	"sync"
 	"time"
 
 	"github.com/brensch/snek2/executor/mcts"
@@ -43,6 +42,7 @@ type PlayGameOutcome struct {
 type PlayGameOptions struct {
 	Resume        *InProgressGame
 	StopRequested func() bool
+	ModelPath     string // Resolved path to the ONNX model used
 }
 
 // PlayGame is the legacy API used by older callers. It will abort and return nil rows
@@ -129,156 +129,67 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 			break
 		}
 
-		moves := make(map[string]int)
-		var movesMu sync.Mutex
-
-		policies := make(map[string][]float32)
-		var policiesMu sync.Mutex
-
-		type mctsStats struct {
-			ChosenMove  int
-			TotalVisits int
-			Visits      [4]int
-			Q           [4]float32
-			Prior       [4]float32
+		// Use alternating MCTS - each snake takes turns in the tree
+		// This gives each snake its own UCB calculation from its perspective
+		searchSims := sims
+		if searchSims <= 0 {
+			searchSims = 1
 		}
-		statsBySnake := make(map[string]mctsStats)
-		var statsMu sync.Mutex
 
-		var wg sync.WaitGroup
+		root, snakeOrder, err := mcts.AlternatingSearch(ctx, client, mctsConfig, state, searchSims)
+		if err != nil {
+			if ctx != nil {
+				select {
+				case <-ctx.Done():
+					return PlayGameOutcome{
+						Completed: false,
+						Result:    GameResult{WinnerId: "", Steps: int(state.Turn)},
+						Checkpoint: &InProgressGame{
+							GameID:   gameID,
+							State:    state.Clone(),
+							Rows:     append([]store.ArchiveTurnRow(nil), rows...),
+							RNGSeed:  rng.Int63(),
+							PausedAt: state.Turn,
+						},
+					}
+				default:
+				}
+			}
+			log.Printf("Alternating MCTS Error: %v", err)
+			continue
+		}
 
-		// Iterate over all snakes to get their moves
+		// Extract results
+		searchResult := mcts.GetAlternatingSearchResult(root, snakeOrder)
+
+		// Get moves - use sampling for early game, argmax later
+		moves := make(map[string]int)
+		policies := make(map[string][]float32)
+
+		for snakeID, policy := range searchResult.Policies {
+			policySlice := policy[:]
+			policies[snakeID] = policySlice
+
+			// Select move: sample early game, argmax later
+			var move int
+			if state.Turn < 10 {
+				move = sampleMove(rng, policySlice)
+			} else {
+				move = argmax(policySlice)
+			}
+			moves[snakeID] = move
+		}
+
+		// Fallback for any snake without a policy (shouldn't happen)
 		for _, snake := range state.Snakes {
 			if snake.Health <= 0 {
 				continue
 			}
-
-			snakeID := snake.Id
-
-			wg.Add(1)
-			go func(id string) {
-				defer wg.Done()
-
-				if ctx != nil {
-					select {
-					case <-ctx.Done():
-						return
-					default:
-					}
-				}
-
-				// Deep copy state for this snake's perspective.
-				localState := state.Clone()
-				localState.YouId = id
-
-				// MCTS Search with local RNG for enemy move sampling
-				mctsRng := rand.New(rand.NewSource(time.Now().UnixNano()))
-				mctsInstance := &mcts.MCTS{
-					Config: mctsConfig,
-					Client: client,
-					Rng:    mctsRng,
-				}
-				searchSims := sims
-				if searchSims <= 0 {
-					searchSims = 1
-				}
-				root, _, err := mctsInstance.Search(ctx, localState, searchSims)
-				if err != nil {
-					if ctx != nil {
-						select {
-						case <-ctx.Done():
-							return
-						default:
-						}
-					}
-					log.Printf("MCTS Error: %v", err)
-					return
-				}
-
-				// Extract Policy
-				policy := make([]float32, 4)
-				totalVisits := 0
-				var visits [4]int
-				var qs [4]float32
-				var priors [4]float32
-				for _, child := range root.Children {
-					if child != nil {
-						totalVisits += child.VisitCount
-					}
-				}
-
-				// If no valid moves found (e.g. trapped), pick a default
-				if totalVisits == 0 {
-					oneHot := []float32{1, 0, 0, 0}
-					movesMu.Lock()
-					moves[id] = 0 // Default Up
-					movesMu.Unlock()
-
-					policiesMu.Lock()
-					policies[id] = oneHot
-					policiesMu.Unlock()
-					return
-				}
-
-				numChildren := 0
-				for move, child := range root.Children {
-					if child != nil && int(move) < len(policy) {
-						numChildren++
-						idx := int(move)
-						visits[idx] = child.VisitCount
-						priors[idx] = child.PriorProb
-						if child.VisitCount > 0 {
-							qs[idx] = child.ValueSum / float32(child.VisitCount)
-						}
-						policy[idx] = float32(child.VisitCount) / float32(totalVisits)
-					}
-				}
-
-				// Debug: Log if we have a 100% policy with multiple legal moves
-				maxProb := float32(0)
-				for _, p := range policy {
-					if p > maxProb {
-						maxProb = p
-					}
-				}
-
-				// Select Move
-				var move int
-				// Use a local RNG or lock the shared one?
-				// For simplicity, let's just use the shared one with a lock, or create a new one.
-				// Creating a new one is safer for concurrency.
-				localRng := rand.New(rand.NewSource(time.Now().UnixNano()))
-
-				if localState.Turn < 10 {
-					move = sampleMove(localRng, policy)
-				} else {
-					move = argmax(policy)
-				}
-
-				movesMu.Lock()
-				moves[id] = move
-				movesMu.Unlock()
-
-				policiesMu.Lock()
-				policies[id] = policy
-				policiesMu.Unlock()
-
-				statsMu.Lock()
-				statsBySnake[id] = mctsStats{
-					ChosenMove:  move,
-					TotalVisits: totalVisits,
-					Visits:      visits,
-					Q:           qs,
-					Prior:       priors,
-				}
-				statsMu.Unlock()
-
-				if verbose {
-					// Per-snake verbose logging is handled after all moves are chosen.
-				}
-			}(snakeID)
+			if _, ok := moves[snake.Id]; !ok {
+				moves[snake.Id] = 0 // Default up
+				policies[snake.Id] = []float32{1, 0, 0, 0}
+			}
 		}
-		wg.Wait()
 
 		if ctx != nil {
 			select {
@@ -318,63 +229,24 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 				ids = append(ids, id)
 			}
 			sort.Strings(ids)
+
+			// Log unified search results
+			log.Printf("[Worker %d] Turn %d: Unified MCTS with %d sims", workerId, state.Turn, sims)
 			for _, id := range ids {
 				m := moves[id]
 				moveName := "Unknown"
 				if m >= 0 && m < len(moveNames) {
 					moveName = moveNames[m]
 				}
-				statsMu.Lock()
-				st, ok := statsBySnake[id]
-				statsMu.Unlock()
-				if ok {
-					bestIdx := 0
-					bestN := -1
-					for i := 0; i < 4; i++ {
-						if st.Visits[i] > bestN {
-							bestN = st.Visits[i]
-							bestIdx = i
-						}
+				policy := policies[id]
+				policyStr := ""
+				for i, p := range policy {
+					if i > 0 {
+						policyStr += " "
 					}
-
-					chosenN := 0
-					chosenQ := float32(0)
-					chosenP := float32(0)
-					if m >= 0 && m < 4 {
-						chosenN = st.Visits[m]
-						chosenQ = st.Q[m]
-						chosenP = st.Prior[m]
-					}
-
-					// Human-readable per-move breakdown.
-					per := make([]string, 0, 4)
-					for i := 0; i < 4; i++ {
-						pct := float32(0)
-						if st.TotalVisits > 0 {
-							pct = float32(st.Visits[i]) / float32(st.TotalVisits) * 100
-						}
-						mark := ""
-						if i == bestIdx {
-							mark = "*" // most visited
-						}
-						per = append(per, fmt.Sprintf("%s%s: N=%d (%.1f%%) Q=%.3f P=%.3f", mark, moveNames[i], st.Visits[i], pct, st.Q[i], st.Prior[i]))
-					}
-
-					log.Printf(
-						"[Worker %d] Turn %d: %s -> %s | chosen N=%d/%d Q=%.3f P=%.3f | %s",
-						workerId,
-						state.Turn,
-						id,
-						moveName,
-						chosenN,
-						st.TotalVisits,
-						chosenQ,
-						chosenP,
-						strings.Join(per, " | "),
-					)
-				} else {
-					log.Printf("[Worker %d] Turn %d: %s -> %s", workerId, state.Turn, id, moveName)
+					policyStr += fmt.Sprintf("%s:%.1f%%", moveNames[i], p*100)
 				}
+				log.Printf("  %s -> %s | policy: %s", id, moveName, policyStr)
 			}
 		}
 
@@ -386,17 +258,26 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 		})
 
 		turnRow := store.ArchiveTurnRow{
-			GameID:  gameID,
-			Turn:    state.Turn,
-			Width:   state.Width,
-			Height:  state.Height,
-			Source:  "selfplay",
-			FoodX:   nil,
-			FoodY:   nil,
-			HazardX: nil,
-			HazardY: nil,
-			Snakes:  nil,
+			GameID:    gameID,
+			Turn:      state.Turn,
+			Width:     state.Width,
+			Height:    state.Height,
+			Source:    "selfplay",
+			ModelPath: opts.ModelPath,
+			FoodX:     nil,
+			FoodY:     nil,
+			HazardX:   nil,
+			HazardY:   nil,
+			Snakes:    nil,
 		}
+
+		// Serialize MCTS root children summary
+		if searchResult != nil && len(searchResult.RootChildren) > 0 {
+			if rootJSON, err := json.Marshal(searchResult.RootChildren); err == nil {
+				turnRow.MCTSRootJSON = rootJSON
+			}
+		}
+
 		if len(state.Food) > 0 {
 			turnRow.FoodX = make([]int32, 0, len(state.Food))
 			turnRow.FoodY = make([]int32, 0, len(state.Food))

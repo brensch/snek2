@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"log"
 	"path/filepath"
 	"sort"
@@ -697,8 +698,11 @@ func queryTurns(ctx context.Context, db *sql.DB, gameID string) ([]Turn, error) 
 }
 
 func queryTurn(ctx context.Context, db *sql.DB, gameID string, turn int32) (Turn, error) {
+	// Try to get mcts_root_json and model_path if they exist (selfplay games have them)
 	row := db.QueryRowContext(ctx,
-		`SELECT game_id, turn::INTEGER, width::INTEGER, height::INTEGER, food_x, food_y, hazard_x, hazard_y, snakes, source
+		`SELECT game_id, turn::INTEGER, width::INTEGER, height::INTEGER, food_x, food_y, hazard_x, hazard_y, snakes, source,
+		        COALESCE(mcts_root_json, NULL) as mcts_root_json,
+		        COALESCE(model_path, '') as model_path
 		 FROM turns
 		 WHERE game_id = ? AND turn = ?
 		 LIMIT 1`, gameID, turn)
@@ -709,11 +713,31 @@ func queryTurn(ctx context.Context, db *sql.DB, gameID string, turn int32) (Turn
 	var hazXAny any
 	var hazYAny any
 	var snakesAny any
-	if err := row.Scan(&t.GameID, &t.Turn, &t.Width, &t.Height, &foodXAny, &foodYAny, &hazXAny, &hazYAny, &snakesAny, &t.Source); err != nil {
-		return Turn{}, err
+	var mctsRootJSON []byte
+	var modelPath string
+	if err := row.Scan(&t.GameID, &t.Turn, &t.Width, &t.Height, &foodXAny, &foodYAny, &hazXAny, &hazYAny, &snakesAny, &t.Source, &mctsRootJSON, &modelPath); err != nil {
+		// Fallback query without mcts_root_json and model_path for older parquet files
+		row = db.QueryRowContext(ctx,
+			`SELECT game_id, turn::INTEGER, width::INTEGER, height::INTEGER, food_x, food_y, hazard_x, hazard_y, snakes, source
+			 FROM turns
+			 WHERE game_id = ? AND turn = ?
+			 LIMIT 1`, gameID, turn)
+		if err := row.Scan(&t.GameID, &t.Turn, &t.Width, &t.Height, &foodXAny, &foodYAny, &hazXAny, &hazYAny, &snakesAny, &t.Source); err != nil {
+			return Turn{}, err
+		}
 	}
 	t.Food = zipPoints(asInt32Slice(foodXAny), asInt32Slice(foodYAny))
 	t.Hazards = zipPoints(asInt32Slice(hazXAny), asInt32Slice(hazYAny))
 	t.Snakes = asSnakes(snakesAny)
+	t.ModelPath = modelPath
+
+	// Parse MCTS root JSON if present
+	if len(mctsRootJSON) > 0 {
+		var rootChildren []JointChildSummary
+		if err := json.Unmarshal(mctsRootJSON, &rootChildren); err == nil {
+			t.MCTSRoot = rootChildren
+		}
+	}
+
 	return t, nil
 }

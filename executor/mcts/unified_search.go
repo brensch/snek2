@@ -192,12 +192,14 @@ func expandJointNode(ctx context.Context, client Predictor, node *JointNode, sna
 		avgValue /= float32(len(values))
 	}
 
-	// Get legal moves for each snake
+	// Get legal moves for each snake.
+	// Use GetLegalMovesWithTailDecrement so snakes can see that tail positions will be free.
+	// Each snake evaluates on the same base state (tails decremented, but no other snake moves committed).
 	legalMoves := make(map[string][]int)
 	for _, snakeID := range aliveSnakes {
 		stateForSnake := node.State.Clone()
 		stateForSnake.YouId = snakeID
-		moves := rules.GetLegalMoves(stateForSnake)
+		moves := rules.GetLegalMovesWithTailDecrement(stateForSnake)
 		if len(moves) == 0 {
 			moves = []int{0} // default if no legal moves
 		}
@@ -317,4 +319,111 @@ func GetBestMoves(root *JointNode) map[string]int {
 	}
 
 	return bestChild.Action.Moves
+}
+
+// JointSearchResult contains the results of a unified MCTS search
+type JointSearchResult struct {
+	Root *JointNode
+
+	// Per-snake derived statistics
+	Moves    map[string]int        // Best move for each snake
+	Policies map[string][4]float32 // Visit distribution per snake
+	Values   map[string]float32    // Q-value of best joint action per snake
+
+	// Root children summary (for storage without full tree)
+	RootChildren []JointChildSummary
+}
+
+// JointChildSummary is a compact representation of a root child for storage
+type JointChildSummary struct {
+	Moves      map[string]int `json:"moves"`
+	VisitCount int            `json:"n"`
+	ValueSum   float32        `json:"value_sum"`
+	Q          float32        `json:"q"`
+	PriorProb  float32        `json:"p"`
+}
+
+// GetSearchResult extracts all useful data from the search for both gameplay and storage
+func GetSearchResult(root *JointNode) *JointSearchResult {
+	if root == nil {
+		return nil
+	}
+
+	result := &JointSearchResult{
+		Root:         root,
+		Moves:        make(map[string]int),
+		Policies:     make(map[string][4]float32),
+		Values:       make(map[string]float32),
+		RootChildren: make([]JointChildSummary, 0, len(root.Children)),
+	}
+
+	if len(root.Children) == 0 {
+		return result
+	}
+
+	// Collect visit counts per snake per move
+	snakeVisits := make(map[string][4]int)
+	totalVisits := 0
+
+	var bestChild *JointChild
+	bestN := -1
+
+	for _, child := range root.Children {
+		totalVisits += child.VisitCount
+
+		if child.VisitCount > bestN {
+			bestN = child.VisitCount
+			bestChild = child
+		}
+
+		// Accumulate per-snake visit counts
+		for snakeID, move := range child.Action.Moves {
+			visits := snakeVisits[snakeID]
+			visits[move] += child.VisitCount
+			snakeVisits[snakeID] = visits
+		}
+
+		// Build root children summary
+		q := float32(0)
+		if child.VisitCount > 0 {
+			q = child.ValueSum / float32(child.VisitCount)
+		}
+		result.RootChildren = append(result.RootChildren, JointChildSummary{
+			Moves:      child.Action.Moves,
+			VisitCount: child.VisitCount,
+			ValueSum:   child.ValueSum,
+			Q:          q,
+			PriorProb:  child.PriorProb,
+		})
+	}
+
+	// Set best moves
+	if bestChild != nil {
+		result.Moves = bestChild.Action.Moves
+
+		// Value is the Q of the best joint action
+		if bestChild.VisitCount > 0 {
+			q := bestChild.ValueSum / float32(bestChild.VisitCount)
+			for snakeID := range bestChild.Action.Moves {
+				result.Values[snakeID] = q
+			}
+		}
+	}
+
+	// Compute per-snake policies (normalized visit counts)
+	for snakeID, visits := range snakeVisits {
+		total := 0
+		for _, v := range visits {
+			total += v
+		}
+		if total > 0 {
+			var policy [4]float32
+			for i, v := range visits {
+				policy[i] = float32(v) / float32(total)
+			}
+			result.Policies[snakeID] = policy
+		}
+	}
+
+	return result
 }
