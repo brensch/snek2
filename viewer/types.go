@@ -133,3 +133,97 @@ type SimulateRequest struct {
 	State Turn           `json:"state"`
 	Moves map[string]int `json:"moves"`
 }
+
+// DebugMCTSNode is a node in the MCTS tree for debug visualization.
+// Unified format: Each node represents ALL snakes making moves together (joint action).
+type DebugMCTSNode struct {
+	// Moves is the joint action - maps snake ID to move (0=Up, 1=Down, 2=Left, 3=Right)
+	// nil for root node
+	Moves map[string]int `json:"moves,omitempty"`
+
+	VisitCount int     `json:"n"`
+	ValueSum   float32 `json:"value_sum"`
+	Q          float32 `json:"q"`
+	PriorProb  float32 `json:"p"`
+	UCB        float32 `json:"ucb"`
+
+	// State is the game state after this joint action
+	State *DebugGameState `json:"state,omitempty"`
+
+	// SnakePriors shows each snake's policy at this node
+	SnakePriors map[string][4]float32 `json:"snake_priors,omitempty"`
+
+	Children []*DebugMCTSNode `json:"children,omitempty"`
+
+	// Legacy fields for old V1/V2 format compatibility
+	Move         int            `json:"move,omitempty"`
+	SnakeID      string         `json:"snake_id,omitempty"`
+	IsResolved   bool           `json:"is_resolved,omitempty"`
+	PendingMoves map[string]int `json:"pending_moves,omitempty"`
+	NextSnake    string         `json:"next_snake,omitempty"`
+}
+
+// DebugGameState is a minimal game state for debug visualization.
+type DebugGameState struct {
+	Turn   int32             `json:"turn"`
+	Width  int32             `json:"width"`
+	Height int32             `json:"height"`
+	YouId  string            `json:"you_id"`
+	Food   []Point           `json:"food"`
+	Snakes []DebugSnakeState `json:"snakes"`
+}
+
+// DebugSnakeState is a minimal snake state for debug visualization.
+type DebugSnakeState struct {
+	ID     string  `json:"id"`
+	Health int32   `json:"health"`
+	Body   []Point `json:"body"`
+	Alive  bool    `json:"alive"`
+}
+
+// DebugSnakeTree holds the MCTS tree for one snake at a turn.
+// DEPRECATED: V2 uses a single shared tree instead.
+type DebugSnakeTree struct {
+	SnakeID  string         `json:"snake_id"`
+	SnakeIdx int            `json:"snake_idx"`
+	BestMove int            `json:"best_move"`
+	Root     *DebugMCTSNode `json:"root"`
+}
+
+// DebugTurnData holds all MCTS trees and state for a single turn.
+type DebugTurnData struct {
+	GameID    string          `json:"game_id"`
+	ModelPath string          `json:"model_path"`
+	Turn      int32           `json:"turn"`
+	Sims      int             `json:"sims"`
+	Cpuct     float32         `json:"cpuct"`
+	State     *DebugGameState `json:"state"`
+
+	// V1: Separate tree per snake (deprecated)
+	Trees []*DebugSnakeTree `json:"trees,omitempty"`
+
+	// V2: Single shared tree that alternates between snakes
+	SnakeOrder []string       `json:"snake_order,omitempty"`
+	Tree       *DebugMCTSNode `json:"tree,omitempty"`
+	ChosenPath []int          `json:"chosen_path,omitempty"`
+}
+
+// DebugGameSummary is a summary of a debug game for listing.
+type DebugGameSummary struct {
+	GameID    string  `json:"game_id"`
+	ModelPath string  `json:"model_path"`
+	TurnCount int     `json:"turn_count"`
+	Sims      int     `json:"sims"`
+	Cpuct     float32 `json:"cpuct"`
+	FileName  string  `json:"file_name"`
+}
+
+// DebugGameResponse is the full debug game data.
+type DebugGameResponse struct {
+	GameID    string          `json:"game_id"`
+	ModelPath string          `json:"model_path"`
+	TurnCount int             `json:"turn_count"`
+	Sims      int             `json:"sims"`
+	Cpuct     float32         `json:"cpuct"`
+	Turns     []DebugTurnData `json:"turns"`
+}

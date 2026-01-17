@@ -167,3 +167,98 @@ export async function simulateTurn(state: Turn, moves: Record<string, number>): 
   if (!res.ok) throw new Error(await res.text())
   return (await res.json()) as Turn
 }
+
+// Debug game types
+
+// Unified MCTS node - each child represents ALL snakes making moves together
+export type DebugMCTSNode = {
+  // Joint moves - all snakes' moves for this action (null for root)
+  moves?: Record<string, number>
+  
+  n: number
+  value_sum: number
+  q: number
+  p: number  // Joint prior (product of individual priors)
+  ucb: number
+  state?: DebugGameState
+  
+  // Per-snake priors at this node
+  snake_priors?: Record<string, number[]>
+  
+  children?: DebugMCTSNode[]
+  
+  // Legacy fields for old format compatibility
+  move?: number
+  snake_id?: string
+  is_resolved?: boolean
+  pending_moves?: Record<string, number>
+  next_snake?: string
+}
+
+export type DebugGameState = {
+  turn: number
+  width: number
+  height: number
+  you_id: string
+  food: Point[]
+  snakes: DebugSnakeState[]
+}
+
+export type DebugSnakeState = {
+  id: string
+  health: number
+  body: Point[]
+  alive: boolean
+}
+
+export type DebugSnakeTree = {
+  snake_id: string
+  snake_idx: number
+  best_move: number
+  root?: DebugMCTSNode
+}
+
+export type DebugTurnData = {
+  game_id: string
+  model_path: string
+  turn: number
+  sims: number
+  cpuct: number
+  state?: DebugGameState
+  // V1: Separate tree per snake (deprecated)
+  trees?: DebugSnakeTree[]
+  // V2: Single shared tree that alternates between snakes
+  snake_order?: string[]
+  tree?: DebugMCTSNode
+  chosen_path?: number[]
+}
+
+export type DebugGameSummary = {
+  game_id: string
+  model_path: string
+  turn_count: number
+  sims: number
+  cpuct: number
+  file_name: string
+}
+
+export type DebugGameResponse = {
+  game_id: string
+  model_path: string
+  turn_count: number
+  sims: number
+  cpuct: number
+  turns: DebugTurnData[]
+}
+
+export async function fetchDebugGames(): Promise<DebugGameSummary[]> {
+  const res = await fetch('/api/debug_games')
+  if (!res.ok) throw new Error(await res.text())
+  return (await res.json()) as DebugGameSummary[]
+}
+
+export async function fetchDebugGame(gameId: string): Promise<DebugGameResponse> {
+  const res = await fetch(`/api/debug_games/${encodeURIComponent(gameId)}`)
+  if (!res.ok) throw new Error(await res.text())
+  return (await res.json()) as DebugGameResponse
+}

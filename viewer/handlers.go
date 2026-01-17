@@ -10,6 +10,7 @@ import (
 	"math/rand"
 	"net/http"
 	"net/url"
+	"os"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,8 @@ func (s *Server) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/api/mcts", s.handleMCTS)
 	mux.HandleFunc("/api/mcts_all", s.handleMCTSAll)
 	mux.HandleFunc("/api/simulate", s.handleSimulate)
+	mux.HandleFunc("/api/debug_games", s.handleDebugGamesList)
+	mux.HandleFunc("/api/debug_games/", s.handleDebugGame)
 }
 
 func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
@@ -548,4 +551,56 @@ func buildMCTSNode(gameID string, n *mcts.Node, depth int, cpuct float32) *MCTSN
 	}
 
 	return out
+}
+
+// handleDebugGamesList returns a list of available debug games.
+func (s *Server) handleDebugGamesList(w http.ResponseWriter, r *http.Request) {
+	withCORS(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	games, err := listDebugGames()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, games)
+}
+
+// handleDebugGame returns the full data for a specific debug game.
+func (s *Server) handleDebugGame(w http.ResponseWriter, r *http.Request) {
+	withCORS(w, r)
+	if r.Method == http.MethodOptions {
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// /api/debug_games/{game_id}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/debug_games/")
+	gameID, err := url.PathUnescape(rest)
+	if err != nil || gameID == "" {
+		http.Error(w, "bad game id", http.StatusBadRequest)
+		return
+	}
+
+	game, err := loadDebugGame(gameID)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.NotFound(w, r)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, game)
 }

@@ -151,3 +151,20 @@ docker-scraper-down:
 .PHONY: orchestrate-local
 orchestrate-local:
 	bash infrastructure/pipeline/orchestrate_local.sh
+
+# Debug game generation - generates a single game with full MCTS tree capture
+# Usage: make debug-game [SIMS=100] [CPUCT=1.0]
+DEBUG_SIMS ?= 100
+DEBUG_CPUCT ?= 1.0
+DEBUG_MODEL ?= models/snake_net.onnx
+
+.PHONY: debug-game
+debug-game:
+	@mkdir -p debug_games
+	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
+	go run ./cmd/debuggame \
+		-model $(DEBUG_MODEL) \
+		-sims $(DEBUG_SIMS) \
+		-cpuct $(DEBUG_CPUCT) \
+		-out-dir debug_games \
+		-frontend http://localhost:5173
