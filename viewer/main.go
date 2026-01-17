@@ -66,10 +66,9 @@ func main() {
 }
 
 func defaultDataDirs() []string {
-	// Prefer processed outputs if present.
+	// Only load generated games (selfplay), not scraped
 	preferred := []string{
 		filepath.Join("processed", "generated"),
-		filepath.Join("processed", "scraped"),
 	}
 	out := make([]string, 0, len(preferred))
 	for _, p := range preferred {

@@ -29,7 +29,7 @@ export PYTHONUNBUFFERED=1
 : "${ONNX_SESSIONS:=1}"
 : "${ONNX_BATCH_SIZE:=512}"
 : "${ONNX_BATCH_TIMEOUT:=5ms}"
-: "${MCTS_SIMS:=100}"
+: "${MCTS_SIMS:=500}"
 : "${TRACE:=false}"
 
 : "${TRAIN_EPOCHS:=5}"

@@ -174,13 +174,8 @@ func main() {
 	// Initialize ONNX Client
 	modelPath := strings.TrimSpace(*modelPathFlag)
 	if modelPath == "" {
-		// Prefer fp16 compute w/ fp32 I/O (good for Go + tensor cores).
-		preferred := "models/snake_net_fp16_f32io.onnx"
-		if _, err := os.Stat(preferred); err == nil {
-			modelPath = preferred
-		} else {
-			modelPath = "models/snake_net.onnx"
-		}
+		// Default to the symlink which training updates to point to the latest model
+		modelPath = "models/snake_net.onnx"
 	}
 	if _, err := os.Stat(modelPath); os.IsNotExist(err) {
 		log.Fatalf("Model file not found: %s. Run `make export-onnx` first.", modelPath)

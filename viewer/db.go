@@ -198,8 +198,9 @@ func openDuckDBWithGlobs(roots []string) (*sql.DB, error) {
 
 	// Use glob patterns directly - DuckDB handles this efficiently
 	// Exclude tmp directories by filtering on filename
+	// Use union_by_name=true to handle parquet files with different schemas (some may have model_path, some may not)
 	sqlText := `CREATE OR REPLACE VIEW turns AS 
-		SELECT * FROM read_parquet([` + strings.Join(globs, ",") + `], filename=true)
+		SELECT * FROM read_parquet([` + strings.Join(globs, ",") + `], filename=true, union_by_name=true)
 		WHERE NOT contains(filename, '/tmp/')`
 	if _, err := db.Exec(sqlText); err != nil {
 		_ = db.Close()
@@ -665,8 +666,10 @@ func queryStats(ctx context.Context, db *sql.DB, fromNs int64, toNs int64, bucke
 }
 
 func queryTurns(ctx context.Context, db *sql.DB, gameID string) ([]Turn, error) {
+	// Include model_path for selfplay games
 	rows, err := db.QueryContext(ctx,
-		`SELECT game_id, turn::INTEGER, width::INTEGER, height::INTEGER, food_x, food_y, hazard_x, hazard_y, snakes, source
+		`SELECT game_id, turn::INTEGER, width::INTEGER, height::INTEGER, food_x, food_y, hazard_x, hazard_y, snakes, source,
+		        COALESCE(model_path, '') as model_path
 		 FROM turns
 		 WHERE game_id = ?
 		 ORDER BY turn ASC`, gameID)
@@ -683,12 +686,14 @@ func queryTurns(ctx context.Context, db *sql.DB, gameID string) ([]Turn, error) 
 		var hazXAny any
 		var hazYAny any
 		var snakesAny any
-		if err := rows.Scan(&t.GameID, &t.Turn, &t.Width, &t.Height, &foodXAny, &foodYAny, &hazXAny, &hazYAny, &snakesAny, &t.Source); err != nil {
+		var modelPath string
+		if err := rows.Scan(&t.GameID, &t.Turn, &t.Width, &t.Height, &foodXAny, &foodYAny, &hazXAny, &hazYAny, &snakesAny, &t.Source, &modelPath); err != nil {
 			return nil, err
 		}
 		t.Food = zipPoints(asInt32Slice(foodXAny), asInt32Slice(foodYAny))
 		t.Hazards = zipPoints(asInt32Slice(hazXAny), asInt32Slice(hazYAny))
 		t.Snakes = asSnakes(snakesAny)
+		t.ModelPath = modelPath
 		turns = append(turns, t)
 	}
 	if err := rows.Err(); err != nil {
