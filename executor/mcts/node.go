@@ -1,6 +1,8 @@
 package mcts
 
 import (
+	"math/rand"
+
 	"github.com/brensch/snek2/game"
 )
 
@@ -39,4 +41,5 @@ type Predictor interface {
 type MCTS struct {
 	Config Config
 	Client Predictor
+	Rng    *rand.Rand // RNG for sampling enemy moves
 }

@@ -352,7 +352,7 @@ func IsGameOver(state *game.GameState) bool {
 	return living <= 1
 }
 
-// IsTerminal returns true if the game is over for You
+// IsTerminal returns true if the game is over for You (won or lost)
 func IsTerminal(state *game.GameState) bool {
 	var you *game.Snake
 	for i := range state.Snakes {
@@ -362,18 +362,31 @@ func IsTerminal(state *game.GameState) bool {
 		}
 	}
 
+	// Ego not found = terminal
 	if you == nil {
 		return true
 	}
 
+	// Ego dead = terminal (loss)
 	if you.Health <= 0 {
 		return true
 	}
 
-	// Check if head is out of bounds or colliding
-	// Note: In MCTS, we usually check IsTerminal on a node that was just created.
-	// If we created a node with an illegal move, it shouldn't exist.
-	// But if we are in a state where we have NO legal moves, we are effectively dead.
+	// Count living enemies
+	livingEnemies := 0
+	for i := range state.Snakes {
+		s := &state.Snakes[i]
+		if s.Id != state.YouId && s.Health > 0 {
+			livingEnemies++
+		}
+	}
+
+	// All enemies dead = terminal (win)
+	if livingEnemies == 0 {
+		return true
+	}
+
+	// Check if we have no legal moves (trapped = loss)
 	if len(GetLegalMoves(state)) == 0 {
 		return true
 	}
@@ -381,11 +394,36 @@ func IsTerminal(state *game.GameState) bool {
 	return false
 }
 
-// GetResult returns the result of the game (+1 for win, -1 for loss)
+// GetResult returns the result of the game from ego's perspective
+// +1 for win (ego alive, all enemies dead), -1 for loss (ego dead), 0 for ongoing
 func GetResult(state *game.GameState) float32 {
-	if IsTerminal(state) {
-		// If we are terminal, we lost (unless we are the last one standing, but let's assume simple survival)
+	var you *game.Snake
+	for i := range state.Snakes {
+		if state.Snakes[i].Id == state.YouId {
+			you = &state.Snakes[i]
+			break
+		}
+	}
+
+	// Ego not found or dead = loss
+	if you == nil || you.Health <= 0 {
 		return -1.0
 	}
+
+	// Count living enemies
+	livingEnemies := 0
+	for i := range state.Snakes {
+		s := &state.Snakes[i]
+		if s.Id != state.YouId && s.Health > 0 {
+			livingEnemies++
+		}
+	}
+
+	// Ego alive, all enemies dead = win
+	if livingEnemies == 0 {
+		return 1.0
+	}
+
+	// Game still ongoing
 	return 0.0
 }

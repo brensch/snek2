@@ -55,9 +55,14 @@ run-go:
 		-onnx-batch-size $(ONNX_BATCH_SIZE) \
 		-onnx-batch-timeout $(ONNX_BATCH_TIMEOUT)
 
-run-viewer:
+run-viewer-api:
 	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
-	go run ./viewer -listen 127.0.0.1:8080 -static-dir viewer/web/dist
+	go run ./viewer -listen 127.0.0.1:8080
+
+run-viewer-web:
+	cd viewer/web && npm run dev
+
+run-viewer: run-viewer-api
 
 $(EXECUTOR_BIN):
 	@mkdir -p $(@D)

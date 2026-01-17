@@ -171,10 +171,12 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 				localState := state.Clone()
 				localState.YouId = id
 
-				// MCTS Search
+				// MCTS Search with local RNG for enemy move sampling
+				mctsRng := rand.New(rand.NewSource(time.Now().UnixNano()))
 				mctsInstance := &mcts.MCTS{
 					Config: mctsConfig,
 					Client: client,
+					Rng:    mctsRng,
 				}
 				searchSims := sims
 				if searchSims <= 0 {
@@ -218,8 +220,10 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 					return
 				}
 
+				numChildren := 0
 				for move, child := range root.Children {
 					if child != nil && int(move) < len(policy) {
+						numChildren++
 						idx := int(move)
 						visits[idx] = child.VisitCount
 						priors[idx] = child.PriorProb
@@ -227,6 +231,14 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 							qs[idx] = child.ValueSum / float32(child.VisitCount)
 						}
 						policy[idx] = float32(child.VisitCount) / float32(totalVisits)
+					}
+				}
+
+				// Debug: Log if we have a 100% policy with multiple legal moves
+				maxProb := float32(0)
+				for _, p := range policy {
+					if p > maxProb {
+						maxProb = p
 					}
 				}
 

@@ -371,7 +371,7 @@ export default function GamePage() {
                 setMctsMoves({})
                 setSimTurn(null)
                 setSimError('')
-                fetchMctsAll(gameId, current.turn, 800, 3, 1.0)
+                fetchMctsAll(gameId, current.turn, 100, 3, 1.0)
                   .then((r) => {
                     setMctsAll(r)
                     const moves: Record<string, number> = {}
@@ -391,7 +391,7 @@ export default function GamePage() {
                   .finally(() => setMctsLoading(false))
               }}
             >
-              {mctsLoading ? 'Running…' : 'Re-run MCTS (800)'}
+              {mctsLoading ? 'Running…' : 'Re-run MCTS (100)'}
             </button>
           </div>
 

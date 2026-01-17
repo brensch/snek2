@@ -135,7 +135,7 @@ export async function fetchMcts(
   gameId: string,
   turn: number,
   egoIdx: number,
-  sims: number = 800,
+  sims: number = 100,
   depth: number = 3,
   cpuct: number = 1.0,
 ): Promise<MctsResponse> {
@@ -148,7 +148,7 @@ export async function fetchMcts(
 export async function fetchMctsAll(
   gameId: string,
   turn: number,
-  sims: number = 800,
+  sims: number = 100,
   depth: number = 3,
   cpuct: number = 1.0,
 ): Promise<MctsAllResponse> {

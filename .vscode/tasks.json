@@ -25,15 +25,32 @@
             "problemMatcher": []
         },
         {
-            "label": "Run Viewer",
+            "label": "Run Viewer API",
             "type": "shell",
-            "command": "make run-viewer",
+            "command": "make run-viewer-api",
             "presentation": {
-                "group": "snek",
+                "group": "viewer",
                 "reveal": "always",
                 "panel": "split"
             },
             "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Viewer Web",
+            "type": "shell",
+            "command": "make run-viewer-web",
+            "presentation": {
+                "group": "viewer",
+                "reveal": "always",
+                "panel": "split"
+            },
+            "isBackground": true,
+            "problemMatcher": []
+        },
+        {
+            "label": "Run Viewer",
+            "dependsOn": ["Run Viewer API", "Run Viewer Web"],
             "problemMatcher": []
         },
         {

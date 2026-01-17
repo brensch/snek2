@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "start": "vite",
     "build": "tsc -p tsconfig.json && vite build",
     "preview": "vite preview"
   },

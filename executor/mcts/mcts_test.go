@@ -2,6 +2,7 @@ package mcts
 
 import (
 	"context"
+	"math/rand"
 	"testing"
 
 	"github.com/brensch/snek2/game"
@@ -24,9 +25,10 @@ func TestSearch(t *testing.T) {
 	// Setup
 	client := &MockInferenceClient{}
 	config := Config{Cpuct: 1.0}
-	mcts := MCTS{Config: config, Client: client}
+	rng := rand.New(rand.NewSource(42))
+	mcts := MCTS{Config: config, Client: client, Rng: rng}
 
-	// Create a simple game state
+	// Create a simple game state with two snakes
 	state := &game.GameState{
 		Width:  11,
 		Height: 11,
@@ -41,8 +43,17 @@ func TestSearch(t *testing.T) {
 					{X: 5, Y: 3},
 				},
 			},
+			{
+				Id:     "enemy",
+				Health: 100,
+				Body: []game.Point{
+					{X: 8, Y: 8},
+					{X: 8, Y: 7},
+					{X: 8, Y: 6},
+				},
+			},
 		},
-		Food: []game.Point{{X: 8, Y: 8}},
+		Food: []game.Point{{X: 2, Y: 2}},
 	}
 
 	// Run Search
@@ -80,9 +91,10 @@ func BenchmarkSearch(b *testing.B) {
 	// Setup
 	client := &MockInferenceClient{}
 	config := Config{Cpuct: 1.0}
-	mcts := MCTS{Config: config, Client: client}
+	rng := rand.New(rand.NewSource(42))
+	mcts := MCTS{Config: config, Client: client, Rng: rng}
 
-	// Create a simple game state
+	// Create a simple game state with two snakes
 	state := &game.GameState{
 		Width:  11,
 		Height: 11,
@@ -97,8 +109,17 @@ func BenchmarkSearch(b *testing.B) {
 					{X: 5, Y: 3},
 				},
 			},
+			{
+				Id:     "enemy",
+				Health: 100,
+				Body: []game.Point{
+					{X: 8, Y: 8},
+					{X: 8, Y: 7},
+					{X: 8, Y: 6},
+				},
+			},
 		},
-		Food: []game.Point{{X: 8, Y: 8}},
+		Food: []game.Point{{X: 2, Y: 2}},
 	}
 
 	b.ResetTimer()

@@ -29,10 +29,10 @@ export PYTHONUNBUFFERED=1
 : "${ONNX_SESSIONS:=1}"
 : "${ONNX_BATCH_SIZE:=512}"
 : "${ONNX_BATCH_TIMEOUT:=5ms}"
-: "${MCTS_SIMS:=800}"
+: "${MCTS_SIMS:=100}"
 : "${TRACE:=false}"
 
-: "${TRAIN_EPOCHS:=10}"
+: "${TRAIN_EPOCHS:=5}"
 : "${TRAIN_BATCH_SIZE:=256}"
 : "${TRAIN_LR:=0.001}"
 
@@ -41,6 +41,10 @@ export PYTHONUNBUFFERED=1
 : "${MAX_CYCLES:=0}"             # 0 = infinite
 
 mkdir -p "${GENERATED_DIR}" "${SCRAPED_DIR}" "${PROCESSED_DIR}/generated" "${PROCESSED_DIR}/scraped" "${HISTORY_DIR}"
+
+# Always rebuild Go binaries to pick up code changes
+echo "[startup] rebuilding executor binary..."
+go build -o bin/executor ./executor
 
 # Ensure we have a model and ONNX to start.
 if [[ ! -f "${MODEL_DIR}/latest.pt" ]]; then
