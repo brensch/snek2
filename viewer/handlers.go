@@ -24,12 +24,17 @@ import (
 // Server holds shared state for HTTP handlers.
 type Server struct {
 	roots   []string
+	dbCache *DBCache
 	getPool func() (*inference.OnnxPool, error)
 }
 
 // NewServer creates a new Server with the given data roots and ONNX pool factory.
 func NewServer(roots []string, getPool func() (*inference.OnnxPool, error)) *Server {
-	return &Server{roots: roots, getPool: getPool}
+	return &Server{
+		roots:   roots,
+		dbCache: NewDBCache(roots, 30*time.Second),
+		getPool: getPool,
+	}
 }
 
 // RegisterRoutes sets up all API routes on the given mux.
@@ -51,27 +56,20 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	db, err := openDuckDBForRoots(s.roots)
+
+	// Use cached games index for fast pagination
+	gamesIndex, err := s.dbCache.GetGamesIndex(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer db.Close()
 
 	limit := parseIntQuery(r, "limit", 200)
 	offset := parseIntQuery(r, "offset", 0)
 	sortKey := strings.TrimSpace(r.URL.Query().Get("sort"))
 	sortDir := strings.TrimSpace(r.URL.Query().Get("dir"))
-	total, err := queryGamesTotal(r.Context(), db)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	games, err := queryGames(r.Context(), db, s.roots, limit, offset, sortKey, sortDir)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+
+	games, total := queryGamesFromIndex(gamesIndex, limit, offset, sortKey, sortDir)
 	writeJSON(w, GamesResponse{Total: total, Games: games})
 }
 
@@ -84,12 +82,11 @@ func (s *Server) handleGameTurns(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	db, err := openDuckDBForRoots(s.roots)
+	db, err := s.dbCache.Get()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer db.Close()
 
 	// /api/games/{id}/turns
 	rest := strings.TrimPrefix(r.URL.Path, "/api/games/")
@@ -138,12 +135,11 @@ func (s *Server) handleStats(w http.ResponseWriter, r *http.Request) {
 		fromNs = nowNs - int64(24*time.Hour)
 	}
 
-	db, err := openDuckDBForRoots(s.roots)
+	db, err := s.dbCache.Get()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer db.Close()
 
 	points, err := queryStats(r.Context(), db, fromNs, toNs, bucketNs)
 	if err != nil {
@@ -193,12 +189,11 @@ func (s *Server) handleMCTS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := openDuckDBForRoots(s.roots)
+	db, err := s.dbCache.Get()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
@@ -293,12 +288,11 @@ func (s *Server) handleMCTSAll(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	db, err := openDuckDBForRoots(s.roots)
+	db, err := s.dbCache.Get()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	defer db.Close()
 
 	ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
 	defer cancel()

@@ -3,85 +3,167 @@ package main
 import (
 	"context"
 	"database/sql"
-	"io/fs"
-	"os"
+	"log"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	_ "github.com/duckdb/duckdb-go/v2"
 )
 
-func findParquetFiles(root string) ([]string, error) {
-	root = strings.TrimSpace(root)
-	if root == "" {
-		return nil, nil
-	}
-	var files []string
-	walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		name := d.Name()
-		if d.IsDir() {
-			if name == "tmp" {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if strings.HasSuffix(strings.ToLower(name), ".parquet") {
-			files = append(files, path)
-		}
-		return nil
-	})
-	if walkErr != nil {
-		if os.IsNotExist(walkErr) {
-			return nil, nil
-		}
-		return nil, walkErr
-	}
-	return files, nil
+// DBCache maintains a cached DuckDB connection that refreshes periodically.
+type DBCache struct {
+	roots       []string
+	refreshRate time.Duration
+
+	mu          sync.RWMutex
+	db          *sql.DB
+	lastRefresh time.Time
+
+	// Cached games index for fast pagination
+	gamesIndex     []GameSummary
+	gamesIndexTime time.Time
 }
 
-func findParquetFilesMulti(roots []string) ([]string, error) {
-	seen := make(map[string]bool, 1024)
-	out := make([]string, 0, 1024)
-	for _, r := range roots {
-		files, err := findParquetFiles(r)
-		if err != nil {
-			return nil, err
-		}
-		for _, f := range files {
-			if seen[f] {
-				continue
-			}
-			seen[f] = true
-			out = append(out, f)
-		}
+// NewDBCache creates a new DBCache with the given roots and refresh rate.
+func NewDBCache(roots []string, refreshRate time.Duration) *DBCache {
+	return &DBCache{
+		roots:       roots,
+		refreshRate: refreshRate,
 	}
-	return out, nil
 }
 
-func openDuckDBForRoots(roots []string) (*sql.DB, error) {
-	parquetFiles, err := findParquetFilesMulti(roots)
+// Get returns the cached DB connection, refreshing if needed.
+func (c *DBCache) Get() (*sql.DB, error) {
+	c.mu.RLock()
+	if c.db != nil && time.Since(c.lastRefresh) < c.refreshRate {
+		db := c.db
+		c.mu.RUnlock()
+		return db, nil
+	}
+	c.mu.RUnlock()
+
+	// Need to refresh
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check after acquiring write lock
+	if c.db != nil && time.Since(c.lastRefresh) < c.refreshRate {
+		return c.db, nil
+	}
+
+	return c.refreshLocked()
+}
+
+// Refresh forces a refresh of the cached DB connection.
+func (c *DBCache) Refresh() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, err := c.refreshLocked()
+	return err
+}
+
+func (c *DBCache) refreshLocked() (*sql.DB, error) {
+	start := time.Now()
+
+	newDB, err := openDuckDBWithGlobs(c.roots)
 	if err != nil {
 		return nil, err
 	}
-	return openDuckDB(parquetFiles)
+
+	// Close old DB if exists
+	if c.db != nil {
+		_ = c.db.Close()
+	}
+
+	c.db = newDB
+	c.lastRefresh = time.Now()
+	// Invalidate games index so it gets rebuilt on next access
+	c.gamesIndex = nil
+	c.gamesIndexTime = time.Time{}
+
+	log.Printf("DBCache refreshed in %v", time.Since(start))
+	return c.db, nil
 }
 
-func openDuckDB(parquetFiles []string) (*sql.DB, error) {
+// GetGamesIndex returns the cached games index, rebuilding if needed.
+// The index is only rebuilt when the DB itself is refreshed (new files detected).
+func (c *DBCache) GetGamesIndex(ctx context.Context) ([]GameSummary, error) {
+	c.mu.RLock()
+	if c.gamesIndex != nil && c.db != nil {
+		idx := c.gamesIndex
+		c.mu.RUnlock()
+		return idx, nil
+	}
+	c.mu.RUnlock()
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// Double-check
+	if c.gamesIndex != nil && c.db != nil {
+		return c.gamesIndex, nil
+	}
+
+	// Ensure DB is initialized
+	if c.db == nil {
+		if _, err := c.refreshLocked(); err != nil {
+			return nil, err
+		}
+	}
+
+	start := time.Now()
+	games, err := queryAllGames(ctx, c.db, c.roots)
+	if err != nil {
+		return nil, err
+	}
+
+	c.gamesIndex = games
+	c.gamesIndexTime = time.Now()
+	log.Printf("Games index rebuilt: %d games in %v", len(games), time.Since(start))
+
+	return c.gamesIndex, nil
+}
+
+// Close closes the cached DB connection.
+func (c *DBCache) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.db != nil {
+		err := c.db.Close()
+		c.db = nil
+		return err
+	}
+	return nil
+}
+
+// openDuckDBWithGlobs creates a DuckDB connection using glob patterns for the roots.
+// This is much faster than enumerating all files.
+func openDuckDBWithGlobs(roots []string) (*sql.DB, error) {
 	db, err := sql.Open("duckdb", ":memory:")
 	if err != nil {
 		return nil, err
 	}
 	// Basic pragmas; ignore errors for compatibility across versions.
 	_, _ = db.Exec("PRAGMA threads=4")
-	// Disable DuckDB's object cache so API responses reflect on-disk changes.
-	_, _ = db.Exec("PRAGMA enable_object_cache=false")
 
-	// Create a view over all parquet shards.
-	if len(parquetFiles) == 0 {
+	// Build glob patterns for each root, excluding tmp directories
+	globs := make([]string, 0, len(roots))
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		// Use glob pattern to match all parquet files recursively
+		glob := filepath.Join(root, "**", "*.parquet")
+		globs = append(globs, "'"+escapeSQLString(glob)+"'")
+	}
+
+	if len(globs) == 0 {
+		// Empty view
 		_, err := db.Exec(`CREATE OR REPLACE VIEW turns AS
 			SELECT * FROM (
 				SELECT
@@ -113,12 +195,11 @@ func openDuckDB(parquetFiles []string) (*sql.DB, error) {
 		return db, nil
 	}
 
-	arr := make([]string, 0, len(parquetFiles))
-	for _, p := range parquetFiles {
-		arr = append(arr, "'"+escapeSQLString(p)+"'")
-	}
-	// filename=true adds a 'filename' column so we can show provenance in the UI.
-	sqlText := "CREATE OR REPLACE VIEW turns AS SELECT * FROM read_parquet([" + strings.Join(arr, ",") + "], filename=true)"
+	// Use glob patterns directly - DuckDB handles this efficiently
+	// Exclude tmp directories by filtering on filename
+	sqlText := `CREATE OR REPLACE VIEW turns AS 
+		SELECT * FROM read_parquet([` + strings.Join(globs, ",") + `], filename=true)
+		WHERE NOT contains(filename, '/tmp/')`
 	if _, err := db.Exec(sqlText); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -197,6 +278,155 @@ func makeRelativeToRoots(filename string, roots []string) string {
 	return best
 }
 
+// queryAllGames loads all game summaries from DuckDB (used to build the cache).
+func queryAllGames(ctx context.Context, db *sql.DB, roots []string) ([]GameSummary, error) {
+	// Query that gets game summaries AND results in one pass using window functions
+	query := `WITH game_stats AS (
+		SELECT
+			game_id,
+			CASE
+				WHEN starts_with(game_id, 'selfplay_') THEN try_cast(regexp_extract(game_id, '^selfplay_([0-9]+)_', 1) AS BIGINT)
+				ELSE NULL
+			END AS started_ns,
+			MIN(turn)::INTEGER AS min_turn,
+			MAX(turn)::INTEGER AS max_turn,
+			(MAX(turn) - MIN(turn) + 1)::INTEGER AS turn_count,
+			MIN(width)::INTEGER AS width,
+			MIN(height)::INTEGER AS height,
+			MIN(source)::VARCHAR AS source,
+			MIN(filename)::VARCHAR AS file
+		FROM turns
+		GROUP BY game_id
+	),
+	last_turns AS (
+		SELECT game_id, snakes
+		FROM (
+			SELECT game_id, snakes, turn,
+				row_number() OVER (PARTITION BY game_id ORDER BY turn DESC) AS rn
+			FROM turns
+		)
+		WHERE rn = 1
+	)
+	SELECT 
+		g.game_id,
+		g.started_ns,
+		g.min_turn,
+		g.max_turn,
+		g.turn_count,
+		g.width,
+		g.height,
+		g.source,
+		g.file,
+		lt.snakes
+	FROM game_stats g
+	LEFT JOIN last_turns lt ON g.game_id = lt.game_id`
+
+	rows, err := db.QueryContext(ctx, query)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	out := make([]GameSummary, 0, 10000)
+	for rows.Next() {
+		var g GameSummary
+		var file string
+		var snakesAny any
+		if err := rows.Scan(&g.GameID, &g.StartedNs, &g.MinTurn, &g.MaxTurn, &g.TurnCount, &g.Width, &g.Height, &g.Source, &file, &snakesAny); err != nil {
+			return nil, err
+		}
+		g.SourceFile = makeRelativeToRoots(file, roots)
+		g.Results = formatSnakeResults(asSnakes(snakesAny))
+		out = append(out, g)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	// Pre-sort by started_ns DESC (default) for fast subsequent sorts
+	sort.Slice(out, func(i, j int) bool {
+		// Handle nil started_ns (put at end)
+		if out[i].StartedNs == nil && out[j].StartedNs == nil {
+			return out[i].GameID > out[j].GameID
+		}
+		if out[i].StartedNs == nil {
+			return false
+		}
+		if out[j].StartedNs == nil {
+			return true
+		}
+		if *out[i].StartedNs != *out[j].StartedNs {
+			return *out[i].StartedNs > *out[j].StartedNs
+		}
+		return out[i].GameID > out[j].GameID
+	})
+
+	return out, nil
+}
+
+// paginateGames sorts and paginates a games index in memory.
+func paginateGames(games []GameSummary, limit, offset int, sortKey, sortDir string) []GameSummary {
+	sk, sd := normalizeSort(sortKey, sortDir)
+
+	// Sort the slice based on the sort key
+	sorted := make([]GameSummary, len(games))
+	copy(sorted, games)
+
+	sort.Slice(sorted, func(i, j int) bool {
+		var less bool
+		switch sk {
+		case "started_ns":
+			// Handle nil
+			if sorted[i].StartedNs == nil && sorted[j].StartedNs == nil {
+				less = sorted[i].GameID < sorted[j].GameID
+			} else if sorted[i].StartedNs == nil {
+				less = false // nil goes last in ASC
+			} else if sorted[j].StartedNs == nil {
+				less = true
+			} else {
+				less = *sorted[i].StartedNs < *sorted[j].StartedNs
+			}
+		case "game_id":
+			less = sorted[i].GameID < sorted[j].GameID
+		case "turn_count":
+			less = sorted[i].TurnCount < sorted[j].TurnCount
+		case "width":
+			less = sorted[i].Width < sorted[j].Width
+		case "height":
+			less = sorted[i].Height < sorted[j].Height
+		case "source":
+			less = sorted[i].Source < sorted[j].Source
+		case "file":
+			less = sorted[i].SourceFile < sorted[j].SourceFile
+		default:
+			less = sorted[i].GameID < sorted[j].GameID
+		}
+
+		if sd == "desc" {
+			return !less
+		}
+		return less
+	})
+
+	// Apply pagination
+	if offset >= len(sorted) {
+		return []GameSummary{}
+	}
+	end := offset + limit
+	if end > len(sorted) {
+		end = len(sorted)
+	}
+	return sorted[offset:end]
+}
+
+// queryGamesFromIndex returns paginated games from the cached index.
+func queryGamesFromIndex(games []GameSummary, limit, offset int, sortKey, sortDir string) ([]GameSummary, int64) {
+	total := int64(len(games))
+	paginated := paginateGames(games, limit, offset, sortKey, sortDir)
+	return paginated, total
+}
+
+// Deprecated: use queryAllGames + paginateGames instead
 func queryGames(ctx context.Context, db *sql.DB, roots []string, limit int, offset int, sortKey string, sortDir string) ([]GameSummary, error) {
 	sk, sd := normalizeSort(sortKey, sortDir)
 	orderExpr := "started_ns"
