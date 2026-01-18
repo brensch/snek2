@@ -689,16 +689,17 @@ func (s *Server) handleRunInference(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Run alternating MCTS - each snake takes turns in the tree
+	// Run simultaneous MCTS - alternating tree with shared inference per round
+	// All snakes see the same state within a round, no information leakage
 	mctsConfig := mcts.Config{Cpuct: 1.0}
-	root, snakeOrder, err := mcts.AlternatingSearch(ctx, pool, mctsConfig, gameState, req.Sims)
+	root, snakeOrder, err := mcts.SimultaneousSearch(ctx, pool, mctsConfig, gameState, req.Sims)
 	if err != nil {
 		http.Error(w, "MCTS search failed: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
 
 	// Convert to debug format
-	debugTree := convertAlternatingNodeToDebug(root, snakeOrder, mctsConfig.Cpuct)
+	debugTree := convertSimultaneousNodeToDebug(root, snakeOrder, mctsConfig.Cpuct)
 	debugState := turnToDebugState(&turn)
 
 	resp := RunInferenceResponse{
@@ -897,6 +898,90 @@ func gameStateToDebugState(s *gamepkg.GameState) *DebugGameState {
 		Food:   food,
 		Snakes: snakes,
 	}
+}
+
+// convertSimultaneousNodeToDebug converts a simultaneous MCTS tree to debug format.
+// The tree structure is the same as alternating, but all snakes in a round share
+// the same base state and cached inference.
+func convertSimultaneousNodeToDebug(node *mcts.SimultaneousNode, snakeOrder []string, cpuct float32) *DebugMCTSNode {
+	if node == nil {
+		return nil
+	}
+
+	q := float32(0)
+	if node.VisitCount > 0 {
+		q = node.ValueSum / float32(node.VisitCount)
+	}
+
+	dn := &DebugMCTSNode{
+		VisitCount: node.VisitCount,
+		ValueSum:   node.ValueSum,
+		Q:          q,
+		PriorProb:  1.0,
+		UCB:        q,
+		SnakeID:    node.SnakeID,
+		SnakeIndex: node.SnakeIndex,
+	}
+
+	if node.State != nil {
+		dn.State = gameStateToDebugState(node.State)
+	}
+
+	// Include the cached priors if available (shows what NN predicted for each snake)
+	if node.RoundCache != nil && len(node.RoundCache.Policies) > 0 {
+		dn.SnakePriors = node.RoundCache.Policies
+	}
+
+	// Convert children
+	if len(node.Children) > 0 {
+		dn.Children = make([]*DebugMCTSNode, 0, len(node.Children))
+
+		// Sort by visit count descending
+		children := make([]*mcts.SimultaneousChild, len(node.Children))
+		copy(children, node.Children)
+		for i := 0; i < len(children)-1; i++ {
+			for j := i + 1; j < len(children); j++ {
+				if children[j].VisitCount > children[i].VisitCount {
+					children[i], children[j] = children[j], children[i]
+				}
+			}
+		}
+
+		sqrtN := float32(1)
+		if node.VisitCount > 0 {
+			sqrtN = float32(math.Sqrt(float64(node.VisitCount)))
+		}
+
+		for _, child := range children {
+			if child.Node == nil {
+				continue
+			}
+
+			childDebug := convertSimultaneousNodeToDebug(child.Node, snakeOrder, cpuct)
+			if childDebug == nil {
+				continue
+			}
+
+			// The move that was made to reach this child (by parent's snake)
+			childDebug.Moves = map[string]int{node.SnakeID: child.Move}
+
+			// Override stats with edge stats
+			childDebug.VisitCount = child.VisitCount
+			childDebug.ValueSum = child.ValueSum
+			childDebug.PriorProb = child.PriorProb
+
+			if child.VisitCount > 0 {
+				childDebug.Q = child.ValueSum / float32(child.VisitCount)
+			} else {
+				childDebug.Q = 0
+			}
+			childDebug.UCB = childDebug.Q + cpuct*child.PriorProb*sqrtN/(1+float32(child.VisitCount))
+
+			dn.Children = append(dn.Children, childDebug)
+		}
+	}
+
+	return dn
 }
 
 // convertAlternatingNodeToDebug converts an alternating MCTS tree to debug format.

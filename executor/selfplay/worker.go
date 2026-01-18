@@ -129,14 +129,14 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 			break
 		}
 
-		// Use alternating MCTS - each snake takes turns in the tree
-		// This gives each snake its own UCB calculation from its perspective
+		// Use simultaneous MCTS - alternating tree structure with shared inference per round
+		// All snakes see the same state within a round, moves applied simultaneously at end
 		searchSims := sims
 		if searchSims <= 0 {
 			searchSims = 1
 		}
 
-		root, snakeOrder, err := mcts.AlternatingSearch(ctx, client, mctsConfig, state, searchSims)
+		simRoot, snakeOrder, err := mcts.SimultaneousSearch(ctx, client, mctsConfig, state, searchSims)
 		if err != nil {
 			if ctx != nil {
 				select {
@@ -155,12 +155,13 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 				default:
 				}
 			}
-			log.Printf("Alternating MCTS Error: %v", err)
+			log.Printf("Simultaneous MCTS Error: %v", err)
 			continue
 		}
+		_ = snakeOrder // Used internally by GetSimultaneousSearchResult
 
-		// Extract results
-		searchResult := mcts.GetAlternatingSearchResult(root, snakeOrder)
+		// Extract results from simultaneous search
+		searchResult := mcts.GetSimultaneousSearchResult(simRoot, snakeOrder)
 
 		// Get moves - use sampling for early game, argmax later
 		moves := make(map[string]int)
