@@ -192,6 +192,22 @@ def _move_to_processed(root_dir: Path, files: Iterable[str]) -> tuple[int, Path]
     return moved, processed_dir
 
 
+def _count_unique_games_and_samples(file_paths: list[str]) -> tuple[int, int]:
+    try:
+        lf = pl.scan_parquet(file_paths)
+        schema = lf.collect_schema()
+        if "game_id" not in schema:
+            return 0, 0
+        df_stats = lf.select([
+            pl.col("game_id").n_unique().alias("n_games"),
+            pl.len().alias("n_samples")
+        ]).collect()
+        return df_stats["n_games"][0], df_stats["n_samples"][0]
+    except Exception as e:
+        print(f"Warning: could not count games: {e}")
+        return 0, 0
+
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser()
     p.add_argument("--data-dir", default=DATA_DIR)
@@ -359,6 +375,10 @@ def main() -> int:
         return 1
 
     print(f"Found {len(train_files)} parquet shards")
+
+    n_games, n_samples = _count_unique_games_and_samples(train_files)
+    if n_games > 0:
+        print(f"Training on {n_games} games ({n_samples} samples)")
 
     # Infer tensor shape early so checkpoint + model match the data.
     try:

@@ -10,6 +10,8 @@ import {
 } from '../api'
 import { renderAsciiBoard, snakeLetters } from '../board'
 
+const simsPerMove = 500 // Number of MCTS sims per move
+
 function clamp01(x: number): number {
   if (!Number.isFinite(x)) return 0
   if (x < 0) return 0
@@ -439,7 +441,7 @@ export default function GamePage() {
               setUnifiedLoading(true)
               setUnifiedError('')
               setSelectedTreeNode(null)
-              runInference({ game_id: gameId, turn: current.turn, sims: 100 })
+              runInference({ game_id: gameId, turn: current.turn, sims: simsPerMove })
                 .then((res) => {
                   setUnifiedTree(res)
                 })
@@ -449,7 +451,7 @@ export default function GamePage() {
                 .finally(() => setUnifiedLoading(false))
             }}
           >
-            {unifiedLoading ? 'Running…' : 'Expand Alternating Tree (100 sims)'}
+            {unifiedLoading ? 'Running…' : `Expand Alternating Tree (${simsPerMove} sims)`}
           </button>
 
           {unifiedError ? <div style={{ color: 'red', marginBottom: 8 }}>Error: {unifiedError}</div> : null}

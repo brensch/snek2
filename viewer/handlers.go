@@ -61,6 +61,12 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Force DB refresh to ensure we see the latest games from disk.
+	if err := s.dbCache.Refresh(); err != nil {
+		http.Error(w, fmt.Sprintf("failed to refresh db: %v", err), http.StatusInternalServerError)
+		return
+	}
+
 	// Use cached games index for fast pagination
 	gamesIndex, err := s.dbCache.GetGamesIndex(r.Context())
 	if err != nil {
@@ -68,7 +74,7 @@ func (s *Server) handleGames(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	limit := parseIntQuery(r, "limit", 200)
+	limit := parseIntQuery(r, "limit", 100000)
 	offset := parseIntQuery(r, "offset", 0)
 	sortKey := strings.TrimSpace(r.URL.Query().Get("sort"))
 	sortDir := strings.TrimSpace(r.URL.Query().Get("dir"))

@@ -18,7 +18,7 @@ export default function GamesPage() {
   const [total, setTotal] = useState<number>(0)
   const [error, setError] = useState<string>('')
   const [loading, setLoading] = useState<boolean>(true)
-  const [pageSize, setPageSize] = useState<number>(50)
+  const [pageSize, setPageSize] = useState<number>(1000)
   const [page, setPage] = useState<number>(0)
   const [sortKey, setSortKey] = useState<SortKey>('started_ns')
   const [sortDir, setSortDir] = useState<SortDir>('desc')
@@ -101,6 +101,7 @@ export default function GamesPage() {
               <option value={50}>50</option>
               <option value={100}>100</option>
               <option value={200}>200</option>
+              <option value={1000}>1000</option>
             </select>
           </label>
         </div>

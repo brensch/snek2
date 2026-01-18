@@ -39,6 +39,10 @@ type AlternatingNode struct {
 	// Policy prior for this snake's moves
 	Prior [4]float32
 
+	// NNValues stores the neural network's value estimate for each snake.
+	// This is populated during expansion and used for non-terminal evaluation.
+	NNValues map[string]float32
+
 	IsExpanded bool
 	IsTerminal bool
 }
@@ -173,20 +177,39 @@ func expandAlternatingNode(ctx context.Context, client Predictor, node *Alternat
 		return
 	}
 
-	// Get policy for this snake
-	stateForSnake := state.Clone()
-	stateForSnake.YouId = node.SnakeID
+	// Get policy and value for ALL snakes at this state.
+	// We need values for all snakes to properly evaluate non-terminal positions.
+	node.NNValues = make(map[string]float32)
+	var decidingSnakeState *game.GameState
+	var decidingSnakePolicy [4]float32
+	for _, snakeID := range snakeOrder {
+		stateForSnake := state.Clone()
+		stateForSnake.YouId = snakeID
 
-	policyLogits, _, err := client.Predict(stateForSnake)
-	if err != nil {
-		return
+		policyLogits, valueLogits, err := client.Predict(stateForSnake)
+		if err != nil {
+			continue
+		}
+
+		// Store value for this snake
+		if len(valueLogits) > 0 {
+			node.NNValues[snakeID] = valueLogits[0]
+		}
+
+		// Save policy for the current deciding snake
+		if snakeID == node.SnakeID {
+			decidingSnakePolicy = softmax4(policyLogits)
+			node.Prior = decidingSnakePolicy
+			decidingSnakeState = stateForSnake
+		}
 	}
 
-	policy := softmax4(policyLogits)
-	node.Prior = policy
-
 	// Get legal moves for this snake (with tail decrement)
-	legalMoves := rules.GetLegalMovesWithTailDecrement(stateForSnake)
+	if decidingSnakeState == nil {
+		decidingSnakeState = state.Clone()
+		decidingSnakeState.YouId = node.SnakeID
+	}
+	legalMoves := rules.GetLegalMovesWithTailDecrement(decidingSnakeState)
 	if len(legalMoves) == 0 {
 		legalMoves = []int{0} // Default if no legal moves
 	}
@@ -205,7 +228,7 @@ func expandAlternatingNode(ctx context.Context, client Predictor, node *Alternat
 		// Create child node
 		child := &AlternatingChild{
 			Move:      move,
-			PriorProb: policy[move],
+			PriorProb: decidingSnakePolicy[move],
 		}
 
 		// Determine next snake or advance state
@@ -263,7 +286,27 @@ func evaluate(node *AlternatingNode, snakeOrder []string) map[string]float32 {
 		return values
 	}
 
-	// Get value for each snake
+	// For terminal nodes, use actual game result
+	if node.IsTerminal {
+		for _, snakeID := range snakeOrder {
+			state := node.State.Clone()
+			state.YouId = snakeID
+			values[snakeID] = rules.GetResult(state)
+		}
+		return values
+	}
+
+	// For non-terminal nodes, use neural network's value estimate.
+	// This is the key insight from AlphaZero: the NN provides a heuristic
+	// for positions we haven't fully explored.
+	if node.NNValues != nil {
+		for snakeID, nnValue := range node.NNValues {
+			values[snakeID] = nnValue
+		}
+		return values
+	}
+
+	// Fallback: if no NN values available, use game result (may be 0 for ongoing)
 	for _, snakeID := range snakeOrder {
 		state := node.State.Clone()
 		state.YouId = snakeID

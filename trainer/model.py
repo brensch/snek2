@@ -78,7 +78,7 @@ class EgoSnakeNet(nn.Module):
 
         v = F.relu(self.value_bn(self.value_conv(x)))
         v = v.flatten(1)
-        v = F.relu(self.value_fc1(v))
+        v = F.leaky_relu(self.value_fc1(v), 0.1)
         v = torch.tanh(self.value_fc2(v))
 
         return p, v
