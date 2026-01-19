@@ -56,6 +56,18 @@ type RoundInferenceCache struct {
 
 	// LegalMoves for each snake, computed on the round's base state
 	LegalMoves map[string][]int
+
+	// AggregatedStats tracks move statistics for each snake, aggregated across
+	// all branches of earlier snakes. This is what makes the search "simultaneous" -
+	// later snakes' UCB selection uses these aggregated stats, not branch-specific ones.
+	// Key: snakeID, Value: [4]MoveStats for each move direction
+	AggregatedStats map[string]*[4]MoveStats
+}
+
+// MoveStats tracks aggregated statistics for a single move across all branches.
+type MoveStats struct {
+	VisitCount int
+	ValueSum   float32
 }
 
 // SimultaneousChild represents a child edge (one move for the current snake)
@@ -156,17 +168,56 @@ func simSelectBestChild(node *SimultaneousNode, config Config) *SimultaneousChil
 	bestScore := float32(-1e9)
 	sqrtN := float32(math.Sqrt(float64(node.VisitCount)))
 
-	for _, child := range node.Children {
-		q := float32(0)
-		if child.VisitCount > 0 {
-			q = child.ValueSum / float32(child.VisitCount)
+	// For snakes after the first in a round (SnakeIndex > 0), use aggregated
+	// statistics instead of branch-specific ones. This ensures the snake's
+	// exploration is NOT conditioned on earlier snakes' choices.
+	useAggregated := node.SnakeIndex > 0 && node.RoundCache != nil &&
+		node.RoundCache.AggregatedStats != nil
+
+	var aggStats *[4]MoveStats
+	var aggTotalVisits int
+	if useAggregated {
+		aggStats = node.RoundCache.AggregatedStats[node.SnakeID]
+		if aggStats != nil {
+			for i := 0; i < 4; i++ {
+				aggTotalVisits += aggStats[i].VisitCount
+			}
 		}
+	}
 
-		u := q + config.Cpuct*child.PriorProb*sqrtN/(1+float32(child.VisitCount))
+	sqrtAggN := float32(1)
+	if aggTotalVisits > 0 {
+		sqrtAggN = float32(math.Sqrt(float64(aggTotalVisits)))
+	}
 
-		if u > bestScore {
-			bestScore = u
-			bestChild = child
+	for _, child := range node.Children {
+		var q float32
+		var n int
+
+		if useAggregated && aggStats != nil {
+			// Use aggregated statistics across all branches
+			stats := &aggStats[child.Move]
+			n = stats.VisitCount
+			if n > 0 {
+				q = stats.ValueSum / float32(n)
+			}
+			// UCB with aggregated stats
+			u := q + config.Cpuct*child.PriorProb*sqrtAggN/(1+float32(n))
+			if u > bestScore {
+				bestScore = u
+				bestChild = child
+			}
+		} else {
+			// First snake in round: use branch-specific statistics (normal MCTS)
+			n = child.VisitCount
+			if n > 0 {
+				q = child.ValueSum / float32(n)
+			}
+			u := q + config.Cpuct*child.PriorProb*sqrtN/(1+float32(n))
+			if u > bestScore {
+				bestScore = u
+				bestChild = child
+			}
 		}
 	}
 
@@ -282,9 +333,10 @@ func simExpandNode(ctx context.Context, client Predictor, node *SimultaneousNode
 // This is called once at the start of each round.
 func computeRoundCache(ctx context.Context, client Predictor, state *game.GameState, snakeOrder []string) *RoundInferenceCache {
 	cache := &RoundInferenceCache{
-		Policies:   make(map[string][4]float32),
-		Values:     make(map[string]float32),
-		LegalMoves: make(map[string][]int),
+		Policies:        make(map[string][4]float32),
+		Values:          make(map[string]float32),
+		LegalMoves:      make(map[string][]int),
+		AggregatedStats: make(map[string]*[4]MoveStats),
 	}
 
 	// Get alive snakes
@@ -323,6 +375,9 @@ func computeRoundCache(ctx context.Context, client Predictor, state *game.GameSt
 		if len(cache.LegalMoves[snakeID]) == 0 {
 			cache.LegalMoves[snakeID] = []int{0}
 		}
+
+		// Initialize aggregated stats for this snake (all zeros)
+		cache.AggregatedStats[snakeID] = &[4]MoveStats{}
 	}
 
 	return cache
@@ -377,6 +432,18 @@ func simBackpropagate(path []*SimultaneousNode, childPath []*SimultaneousChild, 
 			if v, ok := values[node.SnakeID]; ok {
 				child.ValueSum += v
 			}
+
+			// CRITICAL: Update aggregated stats in the round cache.
+			// This allows later snakes' UCB selection to use statistics that are
+			// NOT conditioned on earlier snakes' choices in this round.
+			if node.RoundCache != nil && node.RoundCache.AggregatedStats != nil {
+				if aggStats := node.RoundCache.AggregatedStats[node.SnakeID]; aggStats != nil {
+					aggStats[child.Move].VisitCount++
+					if v, ok := values[node.SnakeID]; ok {
+						aggStats[child.Move].ValueSum += v
+					}
+				}
+			}
 		}
 	}
 }
@@ -417,26 +484,28 @@ func GetSimultaneousSearchResult(root *SimultaneousNode, snakeOrder []string) *S
 	}
 	result.Policies[root.SnakeID] = firstSnakePolicy
 
-	// For other snakes, aggregate visit counts across all branches.
+	// For other snakes, use the aggregated stats from the round cache.
 	// This is important: we DON'T want to condition snake B's policy on snake A's choice.
-	// Instead, we aggregate B's move visits across all of A's branches.
-	for snakeIdx := 1; snakeIdx < len(snakeOrder); snakeIdx++ {
-		snakeID := snakeOrder[snakeIdx]
-		moveCounts := [4]int{}
-
-		// Traverse to find all nodes for this snake and aggregate
-		collectMoveCountsAtLevel(root, snakeIdx, snakeOrder, &moveCounts)
-
-		total := 0
-		for _, c := range moveCounts {
-			total += c
-		}
-		if total > 0 {
-			var policy [4]float32
-			for i := 0; i < 4; i++ {
-				policy[i] = float32(moveCounts[i]) / float32(total)
+	// The aggregated stats track each snake's move statistics across ALL branches.
+	if root.RoundCache != nil && root.RoundCache.AggregatedStats != nil {
+		for snakeIdx := 1; snakeIdx < len(snakeOrder); snakeIdx++ {
+			snakeID := snakeOrder[snakeIdx]
+			aggStats := root.RoundCache.AggregatedStats[snakeID]
+			if aggStats == nil {
+				continue
 			}
-			result.Policies[snakeID] = policy
+
+			total := 0
+			for i := 0; i < 4; i++ {
+				total += aggStats[i].VisitCount
+			}
+			if total > 0 {
+				var policy [4]float32
+				for i := 0; i < 4; i++ {
+					policy[i] = float32(aggStats[i].VisitCount) / float32(total)
+				}
+				result.Policies[snakeID] = policy
+			}
 		}
 	}
 

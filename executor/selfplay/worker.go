@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"math/rand"
 	"sort"
 	"time"
@@ -403,20 +404,40 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 	rows = append(rows, terminalRow)
 
 	// Assign values after outcome is known.
+	// Apply a per-turn discount (gamma) to WINS so faster wins are worth more.
+	// Losses remain at flat -1 to create asymmetric pressure favoring aggression:
+	// - Passive play risks full loss penalty with diminished win reward
+	// - Aggressive play has same downside but better upside
+	const gamma = 0.997 // Discount factor per turn (~0.74 value at turn 100, ~0.55 at turn 200)
+
+	totalTurns := len(rows)
 	for i := range rows {
+		// Discount based on how many turns remain until game end
+		turnsRemaining := totalTurns - 1 - i
+		discount := float32(math.Pow(float64(gamma), float64(turnsRemaining)))
+
 		for j := range rows[i].Snakes {
 			if winnerId == "" {
 				// Treat draws as a negative outcome to discourage "suicidal" play
-				// where both snakes die simultaneously.
+				// where both snakes die simultaneously. No discount - draws are always bad.
 				rows[i].Snakes[j].Value = -0.5
 				continue
 			}
 			if rows[i].Snakes[j].ID == winnerId {
-				rows[i].Snakes[j].Value = 1
+				// Discount wins - faster wins are worth more
+				rows[i].Snakes[j].Value = 1 * discount
 			} else {
+				// Flat loss penalty - losing is always maximally bad
 				rows[i].Snakes[j].Value = -1
 			}
 		}
+	}
+
+	// Generate final game_id with finish time (not start time) so the viewer
+	// shows when the game completed rather than when it started.
+	finishedGameID := fmt.Sprintf("selfplay_%d_%d", time.Now().UnixNano(), workerId)
+	for i := range rows {
+		rows[i].GameID = finishedGameID
 	}
 
 	return PlayGameOutcome{Completed: true, Rows: rows, Result: GameResult{WinnerId: winnerId, Steps: int(state.Turn)}}

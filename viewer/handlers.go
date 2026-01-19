@@ -952,6 +952,22 @@ func convertSimultaneousNodeToDebug(node *mcts.SimultaneousNode, snakeOrder []st
 			sqrtN = float32(math.Sqrt(float64(node.VisitCount)))
 		}
 
+		// For non-first snakes, calculate aggregated stats for display
+		var aggStats *[4]mcts.MoveStats
+		var aggTotalVisits int
+		if node.SnakeIndex > 0 && node.RoundCache != nil && node.RoundCache.AggregatedStats != nil {
+			aggStats = node.RoundCache.AggregatedStats[node.SnakeID]
+			if aggStats != nil {
+				for i := 0; i < 4; i++ {
+					aggTotalVisits += aggStats[i].VisitCount
+				}
+			}
+		}
+		sqrtAggN := float32(1)
+		if aggTotalVisits > 0 {
+			sqrtAggN = float32(math.Sqrt(float64(aggTotalVisits)))
+		}
+
 		for _, child := range children {
 			if child.Node == nil {
 				continue
@@ -965,17 +981,29 @@ func convertSimultaneousNodeToDebug(node *mcts.SimultaneousNode, snakeOrder []st
 			// The move that was made to reach this child (by parent's snake)
 			childDebug.Moves = map[string]int{node.SnakeID: child.Move}
 
-			// Override stats with edge stats
-			childDebug.VisitCount = child.VisitCount
-			childDebug.ValueSum = child.ValueSum
-			childDebug.PriorProb = child.PriorProb
-
-			if child.VisitCount > 0 {
-				childDebug.Q = child.ValueSum / float32(child.VisitCount)
+			// For non-first snakes, show AGGREGATED stats (what the search actually uses)
+			if aggStats != nil {
+				stats := &aggStats[child.Move]
+				childDebug.VisitCount = stats.VisitCount
+				childDebug.ValueSum = stats.ValueSum
+				if stats.VisitCount > 0 {
+					childDebug.Q = stats.ValueSum / float32(stats.VisitCount)
+				} else {
+					childDebug.Q = 0
+				}
+				childDebug.UCB = childDebug.Q + cpuct*child.PriorProb*sqrtAggN/(1+float32(stats.VisitCount))
 			} else {
-				childDebug.Q = 0
+				// First snake: use branch-specific stats
+				childDebug.VisitCount = child.VisitCount
+				childDebug.ValueSum = child.ValueSum
+				if child.VisitCount > 0 {
+					childDebug.Q = child.ValueSum / float32(child.VisitCount)
+				} else {
+					childDebug.Q = 0
+				}
+				childDebug.UCB = childDebug.Q + cpuct*child.PriorProb*sqrtN/(1+float32(child.VisitCount))
 			}
-			childDebug.UCB = childDebug.Q + cpuct*child.PriorProb*sqrtN/(1+float32(child.VisitCount))
+			childDebug.PriorProb = child.PriorProb
 
 			dn.Children = append(dn.Children, childDebug)
 		}
