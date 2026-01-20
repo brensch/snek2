@@ -17,7 +17,6 @@ import (
 
 	"github.com/brensch/snek2/executor/mcts"
 	"github.com/brensch/snek2/game"
-	"github.com/brensch/snek2/rules"
 	"github.com/brensch/snek2/scraper/store"
 )
 
@@ -131,7 +130,7 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 			PrintBoard(state)
 		}
 
-		if rules.IsGameOver(state) {
+		if game.IsGameOver(state) {
 			break
 		}
 
@@ -338,7 +337,7 @@ func PlayGameWithOptions(ctx context.Context, workerId int, mctsConfig mcts.Conf
 		}
 
 		// Advance State Simultaneously (with food spawning randomness)
-		state = rules.NextStateSimultaneousWithRNG(state, moves, rng)
+		state = game.NextStateSimultaneousWithRNG(state, moves, rng)
 	}
 
 	// Determine Winner
@@ -479,7 +478,7 @@ func createInitialState(rng *rand.Rand) *game.GameState {
 
 	// Spawn initial food like Battlesnake: enforce minimum food at game start.
 	// Use chance=0 so we only ensure the minimum.
-	rules.ApplyFoodSettings(state, rng, rules.FoodSettings{MinimumFood: 1, FoodSpawnChance: 0})
+	game.ApplyFoodSettings(state, rng, game.FoodSettings{MinimumFood: 1, FoodSpawnChance: 0})
 	return state
 }
 

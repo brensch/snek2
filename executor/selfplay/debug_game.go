@@ -14,7 +14,6 @@ import (
 
 	"github.com/brensch/snek2/executor/mcts"
 	"github.com/brensch/snek2/game"
-	"github.com/brensch/snek2/rules"
 	"github.com/brensch/snek2/scraper/store"
 )
 
@@ -109,7 +108,7 @@ func PlayDebugGame(ctx context.Context, mctsConfig mcts.Config, client mcts.Pred
 			}
 		}
 
-		if rules.IsGameOver(state) {
+		if game.IsGameOver(state) {
 			break
 		}
 
@@ -164,7 +163,7 @@ func PlayDebugGame(ctx context.Context, mctsConfig mcts.Config, client mcts.Pred
 		}
 
 		// Advance state with chosen moves
-		state = rules.NextStateSimultaneousWithRNG(state, chosenMoves, rng)
+		state = game.NextStateSimultaneousWithRNG(state, chosenMoves, rng)
 	}
 
 	// Determine winner

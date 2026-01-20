@@ -14,7 +14,6 @@ import (
 	"math"
 
 	"github.com/brensch/snek2/game"
-	"github.com/brensch/snek2/rules"
 )
 
 // JointAction represents all snakes' moves for a single game step
@@ -129,13 +128,13 @@ func UnifiedSearch(ctx context.Context, client Predictor, config Config, rootSta
 		// Expansion & Evaluation
 		value := float32(0)
 
-		if rules.IsGameOver(node.State) {
+		if game.IsGameOver(node.State) {
 			// Terminal - evaluate from first snake's perspective (they're all the same model)
 			tempState := node.State.Clone()
 			if len(snakeOrder) > 0 {
 				tempState.YouId = snakeOrder[0]
 			}
-			value = rules.GetResult(tempState)
+			value = game.GetResult(tempState)
 		} else if !node.IsExpanded {
 			// Expand: get policy for each alive snake
 			value = expandJointNode(ctx, client, node, snakeOrder)
@@ -208,7 +207,7 @@ func expandJointNode(ctx context.Context, client Predictor, node *JointNode, sna
 	for _, snakeID := range aliveSnakes {
 		stateForSnake := node.State.Clone()
 		stateForSnake.YouId = snakeID
-		moves := rules.GetLegalMovesWithTailDecrement(stateForSnake)
+		moves := game.GetLegalMovesWithTailDecrement(stateForSnake)
 		if len(moves) == 0 {
 			moves = []int{0} // default if no legal moves
 		}
@@ -237,7 +236,7 @@ func expandJointNode(ctx context.Context, client Predictor, node *JointNode, sna
 		}
 
 		// Simulate the joint action
-		nextState := rules.NextStateSimultaneous(node.State, action.Moves)
+		nextState := game.NextStateSimultaneous(node.State, action.Moves)
 
 		child := &JointChild{
 			Action:    action,

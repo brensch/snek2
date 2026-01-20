@@ -17,7 +17,6 @@ import (
 	"math"
 
 	"github.com/brensch/snek2/game"
-	"github.com/brensch/snek2/rules"
 )
 
 // SimultaneousNode represents a node in the MCTS tree with proper simultaneous semantics.
@@ -246,7 +245,7 @@ func simExpandNode(ctx context.Context, client Predictor, node *SimultaneousNode
 	}
 
 	// Check if game is over
-	if rules.IsGameOver(state) {
+	if game.IsGameOver(state) {
 		node.IsTerminal = true
 		return
 	}
@@ -292,7 +291,7 @@ func simExpandNode(ctx context.Context, client Predictor, node *SimultaneousNode
 
 		if nextSnakeIdx >= len(snakeOrder) {
 			// All snakes have chosen - advance the game state
-			nextState := rules.NextStateSimultaneous(state, newMoves)
+			nextState := game.NextStateSimultaneous(state, newMoves)
 
 			// Get alive snakes in new state
 			aliveSnakes := make([]string, 0)
@@ -302,7 +301,7 @@ func simExpandNode(ctx context.Context, client Predictor, node *SimultaneousNode
 				}
 			}
 
-			if len(aliveSnakes) == 0 || rules.IsGameOver(nextState) {
+			if len(aliveSnakes) == 0 || game.IsGameOver(nextState) {
 				child.Node = &SimultaneousNode{
 					State:            nextState,
 					SnakeIndex:       0,
@@ -383,7 +382,7 @@ func computeRoundCache(ctx context.Context, client Predictor, state *game.GameSt
 		}
 
 		// Get legal moves (computed on the base state, not affected by other snakes' choices)
-		cache.LegalMoves[snakeID] = rules.GetLegalMovesWithTailDecrement(stateForSnake)
+		cache.LegalMoves[snakeID] = game.GetLegalMovesWithTailDecrement(stateForSnake)
 		if len(cache.LegalMoves[snakeID]) == 0 {
 			cache.LegalMoves[snakeID] = []int{0}
 		}
@@ -407,7 +406,7 @@ func simEvaluate(node *SimultaneousNode, snakeOrder []string) map[string]float32
 		for _, snakeID := range snakeOrder {
 			state := node.State.Clone()
 			state.YouId = snakeID
-			values[snakeID] = rules.GetResult(state)
+			values[snakeID] = game.GetResult(state)
 		}
 		return values
 	}

@@ -1,128 +1,77 @@
-package rules
+package game
 
 import (
-	"fmt"
-	"sort"
 	"strings"
 	"testing"
-
-	"github.com/brensch/snek2/game"
 )
 
-func dumpState(state *game.GameState) string {
-	if state == nil {
-		return "<nil state>"
+// dumpState is a test helper to visualize board state.
+func dumpState(state *GameState) string {
+	grid := make([][]byte, state.Height)
+	for y := int32(0); y < state.Height; y++ {
+		grid[y] = make([]byte, state.Width)
+		for x := int32(0); x < state.Width; x++ {
+			grid[y][x] = '.'
+		}
 	}
-
-	var b strings.Builder
-	fmt.Fprintf(&b, "Turn=%d Size=%dx%d You=%s\n", state.Turn, state.Width, state.Height, state.YouId)
-
-	// Food
-	fmt.Fprintf(&b, "Food(%d):", len(state.Food))
 	for _, f := range state.Food {
-		fmt.Fprintf(&b, " (%d,%d)", f.X, f.Y)
-	}
-	b.WriteString("\n")
-
-	// Snakes (stable order)
-	snakes := make([]game.Snake, len(state.Snakes))
-	copy(snakes, state.Snakes)
-	sort.Slice(snakes, func(i, j int) bool { return snakes[i].Id < snakes[j].Id })
-	for _, s := range snakes {
-		fmt.Fprintf(&b, "Snake %s Health=%d Len=%d Body:", s.Id, s.Health, len(s.Body))
-		for _, p := range s.Body {
-			fmt.Fprintf(&b, " (%d,%d)", p.X, p.Y)
+		if f.Y >= 0 && f.Y < state.Height && f.X >= 0 && f.X < state.Width {
+			grid[f.Y][f.X] = '*'
 		}
-		b.WriteString("\n")
 	}
-
-	// Simple board view (top-to-bottom)
-	w, h := int(state.Width), int(state.Height)
-	if w > 0 && h > 0 && w <= 40 && h <= 40 {
-		food := make(map[[2]int]bool, len(state.Food))
-		for _, f := range state.Food {
-			food[[2]int{int(f.X), int(f.Y)}] = true
-		}
-		occ := make(map[[2]int]int, 64)
-		head := make(map[[2]int]bool, 8)
-		for _, s := range state.Snakes {
-			for i, p := range s.Body {
-				k := [2]int{int(p.X), int(p.Y)}
-				occ[k]++
-				if i == 0 {
-					head[k] = true
+	for i, s := range state.Snakes {
+		sym := byte('a' + i)
+		for j, p := range s.Body {
+			if p.Y >= 0 && p.Y < state.Height && p.X >= 0 && p.X < state.Width {
+				if j == 0 {
+					grid[p.Y][p.X] = sym - 32 // uppercase head
+				} else {
+					grid[p.Y][p.X] = sym
 				}
 			}
 		}
-
-		b.WriteString("Board:\n")
-		for y := h - 1; y >= 0; y-- {
-			for x := 0; x < w; x++ {
-				k := [2]int{x, y}
-				switch {
-				case head[k]:
-					b.WriteByte('H')
-				case food[k] && occ[k] > 0:
-					b.WriteByte('*')
-				case food[k]:
-					b.WriteByte('F')
-				case occ[k] > 0:
-					c := occ[k]
-					if c > 9 {
-						c = 9
-					}
-					b.WriteByte(byte('0' + c))
-				default:
-					b.WriteByte('.')
-				}
-			}
-			b.WriteByte('\n')
-		}
 	}
-
-	return b.String()
+	var sb strings.Builder
+	for y := state.Height - 1; y >= 0; y-- {
+		sb.WriteString(string(grid[y]))
+		sb.WriteByte('\n')
+	}
+	return sb.String()
 }
 
-func logNextState(t *testing.T, name string, before *game.GameState, move int, after *game.GameState) {
-	t.Helper()
-	t.Logf("=== %s ===\nBefore:\n%sMove: %d\nAfter:\n%s", name, dumpState(before), move, dumpState(after))
+func logNextState(t *testing.T, label string, before *GameState, move int, after *GameState) {
+	moveNames := []string{"up", "down", "left", "right"}
+	t.Logf("%s\n  BEFORE (move=%s):\n%s  AFTER:\n%s", label, moveNames[move], dumpState(before), dumpState(after))
 }
 
-func logNextStateSimultaneous(t *testing.T, name string, before *game.GameState, moves map[string]int, after *game.GameState) {
-	t.Helper()
-	ids := make([]string, 0, len(moves))
-	for id := range moves {
-		ids = append(ids, id)
+func logNextStateSimultaneous(t *testing.T, label string, before *GameState, moves map[string]int, after *GameState) {
+	moveNames := []string{"up", "down", "left", "right"}
+	var moveStrs []string
+	for id, m := range moves {
+		moveStrs = append(moveStrs, id+"="+moveNames[m])
 	}
-	sort.Strings(ids)
-	var mv strings.Builder
-	mv.WriteString("Moves:")
-	for _, id := range ids {
-		fmt.Fprintf(&mv, " %s=%d", id, moves[id])
-	}
-	mv.WriteByte('\n')
-	t.Logf("=== %s ===\nBefore:\n%s%sAfter:\n%s", name, dumpState(before), mv.String(), dumpState(after))
+	t.Logf("%s\n  BEFORE (moves=%v):\n%s  AFTER:\n%s", label, moveStrs, dumpState(before), dumpState(after))
 }
 
 func TestNextState_NormalMove_NoFood(t *testing.T) {
-	before := &game.GameState{
+	before := &GameState{
 		Width:  7,
 		Height: 7,
 		YouId:  "me",
-		Snakes: []game.Snake{{
+		Snakes: []Snake{{
 			Id:     "me",
-			Health: 10,
-			Body:   []game.Point{{X: 3, Y: 3}, {X: 3, Y: 2}, {X: 3, Y: 1}},
+			Health: 100,
+			Body:   []Point{{X: 3, Y: 3}, {X: 3, Y: 2}, {X: 3, Y: 1}},
 		}},
-		Food: nil,
+		Food: []Point{},
 		Turn: 0,
 	}
 
 	after := NextStateWithFoodSettings(before, MoveUp, nil, FoodSettings{MinimumFood: 0, FoodSpawnChance: 0})
-	logNextState(t, "NextState normal move", before, MoveUp, after)
+	logNextState(t, "NextState normal move (no food)", before, MoveUp, after)
 
 	got := after.Snakes[0].Body
-	want := []game.Point{{X: 3, Y: 4}, {X: 3, Y: 3}, {X: 3, Y: 2}}
+	want := []Point{{X: 3, Y: 4}, {X: 3, Y: 3}, {X: 3, Y: 2}}
 	if len(got) != len(want) {
 		t.Fatalf("body len=%d want=%d", len(got), len(want))
 	}
@@ -131,24 +80,22 @@ func TestNextState_NormalMove_NoFood(t *testing.T) {
 			t.Fatalf("body[%d]=%v want=%v", i, got[i], want[i])
 		}
 	}
-	if after.Snakes[0].Health != 9 {
-		t.Fatalf("health=%d want=9", after.Snakes[0].Health)
+	if after.Snakes[0].Health != 99 {
+		t.Fatalf("health=%d want=99", after.Snakes[0].Health)
 	}
 }
 
 func TestNextState_EatFood_GrowsByAppendingTail(t *testing.T) {
-	// This test encodes the requested rule: do a normal move (tail advances),
-	// then grow by duplicating the new tail.
-	before := &game.GameState{
+	before := &GameState{
 		Width:  7,
 		Height: 7,
 		YouId:  "me",
-		Snakes: []game.Snake{{
+		Snakes: []Snake{{
 			Id:     "me",
-			Health: 10,
-			Body:   []game.Point{{X: 3, Y: 3}, {X: 3, Y: 2}, {X: 3, Y: 1}},
+			Health: 50,
+			Body:   []Point{{X: 3, Y: 3}, {X: 3, Y: 2}, {X: 3, Y: 1}},
 		}},
-		Food: []game.Point{{X: 3, Y: 4}},
+		Food: []Point{{X: 3, Y: 4}},
 		Turn: 0,
 	}
 
@@ -156,7 +103,7 @@ func TestNextState_EatFood_GrowsByAppendingTail(t *testing.T) {
 	logNextState(t, "NextState eat food", before, MoveUp, after)
 
 	got := after.Snakes[0].Body
-	want := []game.Point{{X: 3, Y: 4}, {X: 3, Y: 3}, {X: 3, Y: 2}, {X: 3, Y: 2}}
+	want := []Point{{X: 3, Y: 4}, {X: 3, Y: 3}, {X: 3, Y: 2}, {X: 3, Y: 2}}
 	if len(got) != len(want) {
 		t.Fatalf("body len=%d want=%d", len(got), len(want))
 	}
@@ -174,16 +121,16 @@ func TestNextState_EatFood_GrowsByAppendingTail(t *testing.T) {
 }
 
 func TestNextState_StackedSpawn_EatFood(t *testing.T) {
-	before := &game.GameState{
+	before := &GameState{
 		Width:  7,
 		Height: 7,
 		YouId:  "me",
-		Snakes: []game.Snake{{
+		Snakes: []Snake{{
 			Id:     "me",
 			Health: 10,
-			Body:   []game.Point{{X: 1, Y: 1}, {X: 1, Y: 1}, {X: 1, Y: 1}},
+			Body:   []Point{{X: 1, Y: 1}, {X: 1, Y: 1}, {X: 1, Y: 1}},
 		}},
-		Food: []game.Point{{X: 1, Y: 2}},
+		Food: []Point{{X: 1, Y: 2}},
 		Turn: 0,
 	}
 
@@ -191,7 +138,7 @@ func TestNextState_StackedSpawn_EatFood(t *testing.T) {
 	logNextState(t, "NextState stacked spawn eat", before, MoveUp, after)
 
 	got := after.Snakes[0].Body
-	want := []game.Point{{X: 1, Y: 2}, {X: 1, Y: 1}, {X: 1, Y: 1}, {X: 1, Y: 1}}
+	want := []Point{{X: 1, Y: 2}, {X: 1, Y: 1}, {X: 1, Y: 1}, {X: 1, Y: 1}}
 	if len(got) != len(want) {
 		t.Fatalf("body len=%d want=%d", len(got), len(want))
 	}
@@ -203,15 +150,15 @@ func TestNextState_StackedSpawn_EatFood(t *testing.T) {
 }
 
 func TestNextStateSimultaneous_BothMove_OneEats(t *testing.T) {
-	before := &game.GameState{
+	before := &GameState{
 		Width:  7,
 		Height: 7,
 		YouId:  "a",
-		Snakes: []game.Snake{
-			{Id: "a", Health: 10, Body: []game.Point{{X: 1, Y: 1}, {X: 1, Y: 1}, {X: 1, Y: 1}}},
-			{Id: "b", Health: 10, Body: []game.Point{{X: 5, Y: 5}, {X: 5, Y: 5}, {X: 5, Y: 5}}},
+		Snakes: []Snake{
+			{Id: "a", Health: 10, Body: []Point{{X: 1, Y: 1}, {X: 1, Y: 1}, {X: 1, Y: 1}}},
+			{Id: "b", Health: 10, Body: []Point{{X: 5, Y: 5}, {X: 5, Y: 5}, {X: 5, Y: 5}}},
 		},
-		Food: []game.Point{{X: 1, Y: 2}},
+		Food: []Point{{X: 1, Y: 2}},
 		Turn: 0,
 	}
 
@@ -220,7 +167,7 @@ func TestNextStateSimultaneous_BothMove_OneEats(t *testing.T) {
 	logNextStateSimultaneous(t, "NextStateSimultaneous one eats", before, moves, after)
 
 	// Snake a ate: should grow by duplicating new tail.
-	var a, b *game.Snake
+	var a, b *Snake
 	for i := range after.Snakes {
 		s := &after.Snakes[i]
 		if s.Id == "a" {
@@ -236,7 +183,7 @@ func TestNextStateSimultaneous_BothMove_OneEats(t *testing.T) {
 	if len(a.Body) != 4 {
 		t.Fatalf("snake a len=%d want=4", len(a.Body))
 	}
-	wantA := []game.Point{{X: 1, Y: 2}, {X: 1, Y: 1}, {X: 1, Y: 1}, {X: 1, Y: 1}}
+	wantA := []Point{{X: 1, Y: 2}, {X: 1, Y: 1}, {X: 1, Y: 1}, {X: 1, Y: 1}}
 	for i := range wantA {
 		if a.Body[i] != wantA[i] {
 			t.Fatalf("snake a body[%d]=%v want=%v", i, a.Body[i], wantA[i])
@@ -250,7 +197,7 @@ func TestNextStateSimultaneous_BothMove_OneEats(t *testing.T) {
 	if len(b.Body) != 3 {
 		t.Fatalf("snake b len=%d want=3", len(b.Body))
 	}
-	wantB := []game.Point{{X: 4, Y: 5}, {X: 5, Y: 5}, {X: 5, Y: 5}}
+	wantB := []Point{{X: 4, Y: 5}, {X: 5, Y: 5}, {X: 5, Y: 5}}
 	for i := range wantB {
 		if b.Body[i] != wantB[i] {
 			t.Fatalf("snake b body[%d]=%v want=%v", i, b.Body[i], wantB[i])
@@ -266,11 +213,11 @@ func TestNextStateSimultaneous_BothMove_OneEats(t *testing.T) {
 }
 
 func TestFood_MinimumFoodIsEnforced(t *testing.T) {
-	before := &game.GameState{
+	before := &GameState{
 		Width:  5,
 		Height: 5,
 		YouId:  "me",
-		Snakes: []game.Snake{{Id: "me", Health: 100, Body: []game.Point{{X: 2, Y: 2}, {X: 2, Y: 2}, {X: 2, Y: 2}}}},
+		Snakes: []Snake{{Id: "me", Health: 100, Body: []Point{{X: 2, Y: 2}, {X: 2, Y: 2}, {X: 2, Y: 2}}}},
 		Food:   nil,
 		Turn:   0,
 	}
@@ -295,12 +242,12 @@ func TestFood_MinimumFoodIsEnforced(t *testing.T) {
 }
 
 func TestFood_SpawnChanceCanAddExtra(t *testing.T) {
-	before := &game.GameState{
+	before := &GameState{
 		Width:  5,
 		Height: 5,
 		YouId:  "me",
-		Snakes: []game.Snake{{Id: "me", Health: 100, Body: []game.Point{{X: 2, Y: 2}, {X: 2, Y: 2}, {X: 2, Y: 2}}}},
-		Food:   []game.Point{{X: 0, Y: 0}},
+		Snakes: []Snake{{Id: "me", Health: 100, Body: []Point{{X: 2, Y: 2}, {X: 2, Y: 2}, {X: 2, Y: 2}}}},
+		Food:   []Point{{X: 0, Y: 0}},
 		Turn:   0,
 	}
 
@@ -355,15 +302,15 @@ func TestGetLegalMovesWithTailDecrement(t *testing.T) {
 	// Without tail decrement: blocked
 	// With tail decrement: allowed (B's tail will move to (2,1), freeing (3,1))
 
-	state := &game.GameState{
+	state := &GameState{
 		Width:  5,
 		Height: 5,
 		YouId:  "a",
-		Snakes: []game.Snake{
-			{Id: "a", Health: 100, Body: []game.Point{{X: 3, Y: 0}, {X: 2, Y: 0}, {X: 1, Y: 0}}}, // A: head at (3,0)
-			{Id: "b", Health: 100, Body: []game.Point{{X: 1, Y: 1}, {X: 2, Y: 1}, {X: 3, Y: 1}}}, // B: head at (1,1), tail at (3,1)
+		Snakes: []Snake{
+			{Id: "a", Health: 100, Body: []Point{{X: 3, Y: 0}, {X: 2, Y: 0}, {X: 1, Y: 0}}}, // A: head at (3,0)
+			{Id: "b", Health: 100, Body: []Point{{X: 1, Y: 1}, {X: 2, Y: 1}, {X: 3, Y: 1}}}, // B: head at (1,1), tail at (3,1)
 		},
-		Food: []game.Point{},
+		Food: []Point{},
 		Turn: 0,
 	}
 
@@ -414,15 +361,15 @@ func TestGetLegalMovesWithTailDecrement_StackedTail(t *testing.T) {
 	//   . H b T .   <- Snake B: head at (1,1), body (2,1), tail at (3,1) BUT stacked (two at 3,1)
 	//   . . . H .   <- Snake A: head at (3,0)
 
-	state := &game.GameState{
+	state := &GameState{
 		Width:  5,
 		Height: 5,
 		YouId:  "a",
-		Snakes: []game.Snake{
-			{Id: "a", Health: 100, Body: []game.Point{{X: 3, Y: 0}, {X: 2, Y: 0}, {X: 1, Y: 0}}},
-			{Id: "b", Health: 100, Body: []game.Point{{X: 1, Y: 1}, {X: 2, Y: 1}, {X: 3, Y: 1}, {X: 3, Y: 1}}}, // Stacked tail!
+		Snakes: []Snake{
+			{Id: "a", Health: 100, Body: []Point{{X: 3, Y: 0}, {X: 2, Y: 0}, {X: 1, Y: 0}}},
+			{Id: "b", Health: 100, Body: []Point{{X: 1, Y: 1}, {X: 2, Y: 1}, {X: 3, Y: 1}, {X: 3, Y: 1}}}, // Stacked tail!
 		},
-		Food: []game.Point{},
+		Food: []Point{},
 		Turn: 0,
 	}
 

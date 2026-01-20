@@ -1,18 +1,17 @@
-// Package rules implements Battlesnake game rules and state transitions.
+// rules.go implements Battlesnake game rules and state transitions.
 //
-// This package handles:
+// This file handles:
 // - Legal move detection (avoiding walls, snake bodies, hazards)
 // - Simultaneous move resolution (head-to-head collisions, food consumption)
 // - Food spawning and hazard mechanics
 // - Game termination detection (winner/draw/ongoing)
 //
 // The rules follow standard Battlesnake ruleset with simultaneous move semantics.
-package rules
+
+package game
 
 import (
 	"math/rand"
-
-	"github.com/brensch/snek2/game"
 )
 
 const (
@@ -23,8 +22,8 @@ const (
 )
 
 // GetLegalMoves returns a list of legal moves for the snake identified by YouId
-func GetLegalMoves(state *game.GameState) []int {
-	var you *game.Snake
+func GetLegalMoves(state *GameState) []int {
+	var you *Snake
 	for i := range state.Snakes {
 		if state.Snakes[i].Id == state.YouId {
 			you = &state.Snakes[i]
@@ -42,12 +41,12 @@ func GetLegalMoves(state *game.GameState) []int {
 	// Potential next positions
 	candidates := []struct {
 		move int
-		p    game.Point
+		p    Point
 	}{
-		{MoveUp, game.Point{X: head.X, Y: head.Y + 1}},
-		{MoveDown, game.Point{X: head.X, Y: head.Y - 1}},
-		{MoveLeft, game.Point{X: head.X - 1, Y: head.Y}},
-		{MoveRight, game.Point{X: head.X + 1, Y: head.Y}},
+		{MoveUp, Point{X: head.X, Y: head.Y + 1}},
+		{MoveDown, Point{X: head.X, Y: head.Y - 1}},
+		{MoveLeft, Point{X: head.X - 1, Y: head.Y}},
+		{MoveRight, Point{X: head.X + 1, Y: head.Y}},
 	}
 
 	for _, c := range candidates {
@@ -59,7 +58,7 @@ func GetLegalMoves(state *game.GameState) []int {
 	return moves
 }
 
-func isSafe(state *game.GameState, p game.Point, myBody []game.Point) bool {
+func isSafe(state *GameState, p Point, myBody []Point) bool {
 	// 1. Check Bounds
 	if p.X < 0 || p.X >= state.Width || p.Y < 0 || p.Y >= state.Height {
 		return false
@@ -90,7 +89,7 @@ func isSafe(state *game.GameState, p game.Point, myBody []game.Point) bool {
 
 // isSafeWithTailDecrement is like isSafe but excludes tail positions that will move away.
 // A tail will move away unless the snake "stacked" (ate food previous turn, so last two body segments are same position).
-func isSafeWithTailDecrement(state *game.GameState, p game.Point, myBody []game.Point) bool {
+func isSafeWithTailDecrement(state *GameState, p Point, myBody []Point) bool {
 	// 1. Check Bounds
 	if p.X < 0 || p.X >= state.Width || p.Y < 0 || p.Y >= state.Height {
 		return false
@@ -134,8 +133,8 @@ func isSafeWithTailDecrement(state *game.GameState, p game.Point, myBody []game.
 // GetLegalMovesWithTailDecrement returns legal moves accounting for the fact that
 // all snake tails will move away this turn (unless stacked from eating).
 // This is the correct view for MCTS expansion where snakes move simultaneously.
-func GetLegalMovesWithTailDecrement(state *game.GameState) []int {
-	var you *game.Snake
+func GetLegalMovesWithTailDecrement(state *GameState) []int {
+	var you *Snake
 	for i := range state.Snakes {
 		if state.Snakes[i].Id == state.YouId {
 			you = &state.Snakes[i]
@@ -152,12 +151,12 @@ func GetLegalMovesWithTailDecrement(state *game.GameState) []int {
 
 	candidates := []struct {
 		move int
-		p    game.Point
+		p    Point
 	}{
-		{MoveUp, game.Point{X: head.X, Y: head.Y + 1}},
-		{MoveDown, game.Point{X: head.X, Y: head.Y - 1}},
-		{MoveLeft, game.Point{X: head.X - 1, Y: head.Y}},
-		{MoveRight, game.Point{X: head.X + 1, Y: head.Y}},
+		{MoveUp, Point{X: head.X, Y: head.Y + 1}},
+		{MoveDown, Point{X: head.X, Y: head.Y - 1}},
+		{MoveLeft, Point{X: head.X - 1, Y: head.Y}},
+		{MoveRight, Point{X: head.X + 1, Y: head.Y}},
 	}
 
 	for _, c := range candidates {
@@ -172,19 +171,19 @@ func GetLegalMovesWithTailDecrement(state *game.GameState) []int {
 // NextState returns the next state after applying a move for YouId
 // Note: This currently only moves "You". Enemies are static.
 // This is used primarily for MCTS expansion where we might not know enemy moves.
-func NextState(state *game.GameState, move int) *game.GameState {
+func NextState(state *GameState, move int) *GameState {
 	return NextStateWithFoodSettings(state, move, nil, DefaultFoodSettings)
 }
 
-func NextStateWithRNG(state *game.GameState, move int, rng *rand.Rand) *game.GameState {
+func NextStateWithRNG(state *GameState, move int, rng *rand.Rand) *GameState {
 	return NextStateWithFoodSettings(state, move, rng, DefaultFoodSettings)
 }
 
-func NextStateWithFoodSettings(state *game.GameState, move int, rng *rand.Rand, food FoodSettings) *game.GameState {
+func NextStateWithFoodSettings(state *GameState, move int, rng *rand.Rand, food FoodSettings) *GameState {
 	newState := state.Clone()
 	newState.Turn++
 
-	var you *game.Snake
+	var you *Snake
 	for i := range newState.Snakes {
 		if newState.Snakes[i].Id == newState.YouId {
 			you = &newState.Snakes[i]
@@ -198,7 +197,7 @@ func NextStateWithFoodSettings(state *game.GameState, move int, rng *rand.Rand, 
 
 	// Calculate new head
 	head := you.Body[0]
-	newHead := game.Point{X: head.X, Y: head.Y}
+	newHead := Point{X: head.X, Y: head.Y}
 
 	switch move {
 	case MoveUp:
@@ -223,7 +222,7 @@ func NextStateWithFoodSettings(state *game.GameState, move int, rng *rand.Rand, 
 	}
 
 	// Update Body
-	newBody := []game.Point{newHead}
+	newBody := []Point{newHead}
 	newBody = append(newBody, you.Body...)
 
 	// Always do a normal move first (tail advances), then if we ate food,
@@ -251,20 +250,20 @@ func NextStateWithFoodSettings(state *game.GameState, move int, rng *rand.Rand, 
 }
 
 // NextStateSimultaneous advances the game state with moves for all snakes.
-func NextStateSimultaneous(state *game.GameState, moves map[string]int) *game.GameState {
+func NextStateSimultaneous(state *GameState, moves map[string]int) *GameState {
 	return NextStateSimultaneousWithFoodSettings(state, moves, nil, DefaultFoodSettings)
 }
 
-func NextStateSimultaneousWithRNG(state *game.GameState, moves map[string]int, rng *rand.Rand) *game.GameState {
+func NextStateSimultaneousWithRNG(state *GameState, moves map[string]int, rng *rand.Rand) *GameState {
 	return NextStateSimultaneousWithFoodSettings(state, moves, rng, DefaultFoodSettings)
 }
 
-func NextStateSimultaneousWithFoodSettings(state *game.GameState, moves map[string]int, rng *rand.Rand, food FoodSettings) *game.GameState {
+func NextStateSimultaneousWithFoodSettings(state *GameState, moves map[string]int, rng *rand.Rand, food FoodSettings) *GameState {
 	newState := state.Clone()
 	newState.Turn++
 
 	// 1. Calculate potential new heads
-	newHeads := make(map[string]game.Point)
+	newHeads := make(map[string]Point)
 	for i := range newState.Snakes {
 		s := &newState.Snakes[i]
 		if s.Health <= 0 {
@@ -279,7 +278,7 @@ func NextStateSimultaneousWithFoodSettings(state *game.GameState, moves map[stri
 		}
 
 		head := s.Body[0]
-		newHead := game.Point{X: head.X, Y: head.Y}
+		newHead := Point{X: head.X, Y: head.Y}
 		switch move {
 		case MoveUp:
 			newHead.Y++
@@ -308,7 +307,7 @@ func NextStateSimultaneousWithFoodSettings(state *game.GameState, moves map[stri
 	}
 
 	// Remove eaten food
-	remainingFood := []game.Point{}
+	remainingFood := []Point{}
 	for i, f := range newState.Food {
 		if !eatenFood[i] {
 			remainingFood = append(remainingFood, f)
@@ -325,7 +324,7 @@ func NextStateSimultaneousWithFoodSettings(state *game.GameState, moves map[stri
 			continue
 		}
 
-		newBody := []game.Point{newHead}
+		newBody := []Point{newHead}
 		newBody = append(newBody, s.Body...)
 
 		// Always do a normal move first (tail advances), then if we ate food,
@@ -414,7 +413,7 @@ func NextStateSimultaneousWithFoodSettings(state *game.GameState, moves map[stri
 	}
 
 	// Apply Death
-	finalSnakes := make([]game.Snake, 0, len(newState.Snakes))
+	finalSnakes := make([]Snake, 0, len(newState.Snakes))
 	for _, s := range newState.Snakes {
 		if deadSnakes[s.Id] {
 			// Drop dead snakes from the active list.
@@ -432,7 +431,7 @@ func NextStateSimultaneousWithFoodSettings(state *game.GameState, moves map[stri
 }
 
 // IsGameOver returns true if the game is over (0 or 1 snake left)
-func IsGameOver(state *game.GameState) bool {
+func IsGameOver(state *GameState) bool {
 	living := 0
 	for _, s := range state.Snakes {
 		if s.Health > 0 {
@@ -443,8 +442,8 @@ func IsGameOver(state *game.GameState) bool {
 }
 
 // IsTerminal returns true if the game is over for You (won or lost)
-func IsTerminal(state *game.GameState) bool {
-	var you *game.Snake
+func IsTerminal(state *GameState) bool {
+	var you *Snake
 	for i := range state.Snakes {
 		if state.Snakes[i].Id == state.YouId {
 			you = &state.Snakes[i]
@@ -486,8 +485,8 @@ func IsTerminal(state *game.GameState) bool {
 
 // GetResult returns the result of the game from ego's perspective
 // +1 for win (ego alive, all enemies dead), -1 for loss (ego dead), 0 for ongoing
-func GetResult(state *game.GameState) float32 {
-	var you *game.Snake
+func GetResult(state *GameState) float32 {
+	var you *Snake
 	for i := range state.Snakes {
 		if state.Snakes[i].Id == state.YouId {
 			you = &state.Snakes[i]
