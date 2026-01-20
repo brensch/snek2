@@ -1,3 +1,12 @@
+// unified_search.go - Joint action MCTS for debug game generation.
+//
+// UnifiedSearch runs MCTS where all snakes explore simultaneously as a single
+// joint action space. Each node in the tree represents all snakes having moved
+// together. This is used for generating debug games with full tree visualization.
+//
+// The search treats the game as cooperative exploration - since all snakes use
+// the same neural network in self-play, they all work together to explore the
+// state space efficiently.
 package mcts
 
 import (

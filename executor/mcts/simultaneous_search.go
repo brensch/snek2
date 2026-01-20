@@ -1,3 +1,15 @@
+// simultaneous_search.go - Primary MCTS implementation for self-play and game analysis.
+//
+// SimultaneousSearch implements MCTS where the tree alternates between snakes
+// but all snakes in a round see the same game state. Moves are applied
+// simultaneously at the end of each round. This is the main search algorithm
+// used for self-play training and the viewer's MCTS explorer.
+//
+// Key features:
+// - Snakes take turns in the tree for exploration efficiency
+// - All snakes see the same base state within a round (no information leakage)
+// - Neural network inference is cached per round for efficiency
+// - Aggregated statistics allow fair UCB selection for later snakes
 package mcts
 
 import (

@@ -67,3 +67,5 @@ Thumbs.db
 bin/
 *.so
 *.so.*
+
+bin/

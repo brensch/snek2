@@ -1,3 +1,12 @@
+// Package rules implements Battlesnake game rules and state transitions.
+//
+// This package handles:
+// - Legal move detection (avoiding walls, snake bodies, hazards)
+// - Simultaneous move resolution (head-to-head collisions, food consumption)
+// - Food spawning and hazard mechanics
+// - Game termination detection (winner/draw/ongoing)
+//
+// The rules follow standard Battlesnake ruleset with simultaneous move semantics.
 package rules
 
 import (

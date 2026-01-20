@@ -1,3 +1,8 @@
+// Package selfplay implements self-play game generation for training data.
+//
+// PlayGame runs complete self-play games using MCTS to select moves.
+// Games are recorded in archive format for training the neural network.
+// The worker supports resumable games via checkpointing.
 package selfplay
 
 import (

@@ -90,66 +90,6 @@ type JointChildSummary struct {
 	PriorProb  float32        `json:"p"`         // Joint prior
 }
 
-// MCTSMove represents a possible move in the MCTS tree.
-type MCTSMove struct {
-	Move   int       `json:"move"`
-	Exists bool      `json:"exists"`
-	N      int       `json:"n"`
-	Q      float32   `json:"q"`
-	P      float32   `json:"p"`
-	UCB    float32   `json:"ucb"`
-	Child  *MCTSNode `json:"child,omitempty"`
-}
-
-// MCTSNode represents a node in the MCTS search tree.
-type MCTSNode struct {
-	VisitCount int         `json:"visit_count"`
-	Value      float32     `json:"value"`
-	State      *Turn       `json:"state,omitempty"`
-	Moves      [4]MCTSMove `json:"moves"`
-}
-
-// MCTSResponse is the response for the /api/mcts endpoint.
-type MCTSResponse struct {
-	GameID   string    `json:"game_id"`
-	Turn     int32     `json:"turn"`
-	EgoIdx   int       `json:"ego_idx"`
-	EgoID    string    `json:"ego_id"`
-	Sims     int       `json:"sims"`
-	Cpuct    float32   `json:"cpuct"`
-	Depth    int       `json:"depth"`
-	MaxDepth int       `json:"max_depth"`
-	BestMove int       `json:"best_move"`
-	Root     *MCTSNode `json:"root"`
-}
-
-// MCTSSnakeTree represents MCTS results for a single snake.
-type MCTSSnakeTree struct {
-	SnakeIdx int       `json:"snake_idx"`
-	SnakeID  string    `json:"snake_id"`
-	BestMove int       `json:"best_move"`
-	Root     *MCTSNode `json:"root"`
-}
-
-// MCTSAllResponse emulates the selfplay generation logic:
-// run an independent MCTS for each living snake (each with its own YouId perspective)
-// on the same position.
-type MCTSAllResponse struct {
-	GameID string          `json:"game_id"`
-	Turn   int32           `json:"turn"`
-	Sims   int             `json:"sims"`
-	Cpuct  float32         `json:"cpuct"`
-	Depth  int             `json:"depth"`
-	State  Turn            `json:"state"`
-	Snakes []MCTSSnakeTree `json:"snakes"`
-}
-
-// SimulateRequest is the request body for the /api/simulate endpoint.
-type SimulateRequest struct {
-	State Turn           `json:"state"`
-	Moves map[string]int `json:"moves"`
-}
-
 // DebugMCTSNode is a node in the MCTS tree for debug visualization.
 // Alternating format: Each node represents ONE snake's move decision.
 type DebugMCTSNode struct {
@@ -200,51 +140,4 @@ type DebugSnakeState struct {
 	Health int32   `json:"health"`
 	Body   []Point `json:"body"`
 	Alive  bool    `json:"alive"`
-}
-
-// DebugSnakeTree holds the MCTS tree for one snake at a turn.
-// DEPRECATED: V2 uses a single shared tree instead.
-type DebugSnakeTree struct {
-	SnakeID  string         `json:"snake_id"`
-	SnakeIdx int            `json:"snake_idx"`
-	BestMove int            `json:"best_move"`
-	Root     *DebugMCTSNode `json:"root"`
-}
-
-// DebugTurnData holds all MCTS trees and state for a single turn.
-type DebugTurnData struct {
-	GameID    string          `json:"game_id"`
-	ModelPath string          `json:"model_path"`
-	Turn      int32           `json:"turn"`
-	Sims      int             `json:"sims"`
-	Cpuct     float32         `json:"cpuct"`
-	State     *DebugGameState `json:"state"`
-
-	// V1: Separate tree per snake (deprecated)
-	Trees []*DebugSnakeTree `json:"trees,omitempty"`
-
-	// V2: Single shared tree that alternates between snakes
-	SnakeOrder []string       `json:"snake_order,omitempty"`
-	Tree       *DebugMCTSNode `json:"tree,omitempty"`
-	ChosenPath []int          `json:"chosen_path,omitempty"`
-}
-
-// DebugGameSummary is a summary of a debug game for listing.
-type DebugGameSummary struct {
-	GameID    string  `json:"game_id"`
-	ModelPath string  `json:"model_path"`
-	TurnCount int     `json:"turn_count"`
-	Sims      int     `json:"sims"`
-	Cpuct     float32 `json:"cpuct"`
-	FileName  string  `json:"file_name"`
-}
-
-// DebugGameResponse is the full debug game data.
-type DebugGameResponse struct {
-	GameID    string          `json:"game_id"`
-	ModelPath string          `json:"model_path"`
-	TurnCount int             `json:"turn_count"`
-	Sims      int             `json:"sims"`
-	Cpuct     float32         `json:"cpuct"`
-	Turns     []DebugTurnData `json:"turns"`
 }

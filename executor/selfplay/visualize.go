@@ -1,3 +1,7 @@
+// visualize.go - Console visualization for debugging self-play games.
+//
+// PrintBoard outputs an ASCII representation of the game board and
+// neural network input tensor values for debugging and development.
 package selfplay
 
 import (

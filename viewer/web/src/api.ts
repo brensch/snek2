@@ -73,53 +73,6 @@ export type Turn = {
   mcts_root?: JointChildSummary[]
 }
 
-export type MctsMove = {
-  move: number
-  exists: boolean
-  n: number
-  q: number
-  p: number
-  ucb: number
-  child?: MctsNode
-}
-
-export type MctsNode = {
-  visit_count: number
-  value: number
-  state?: Turn
-  moves: [MctsMove, MctsMove, MctsMove, MctsMove]
-}
-
-export type MctsResponse = {
-  game_id: string
-  turn: number
-  ego_idx: number
-  ego_id: string
-  sims: number
-  cpuct: number
-  depth: number
-  max_depth: number
-  best_move: number
-  root: MctsNode
-}
-
-export type MctsSnakeTree = {
-  snake_idx: number
-  snake_id: string
-  best_move: number
-  root?: MctsNode | null
-}
-
-export type MctsAllResponse = {
-  game_id: string
-  turn: number
-  sims: number
-  cpuct: number
-  depth: number
-  state: Turn
-  snakes: MctsSnakeTree[]
-}
-
 export async function fetchGames(
   limit = 200,
   offset = 0,
@@ -142,43 +95,6 @@ export async function fetchStats(fromNs: number, toNs: number, bucketNs: number)
   const res = await fetch(url)
   if (!res.ok) throw new Error(await res.text())
   return (await res.json()) as StatsResponse
-}
-
-export async function fetchMcts(
-  gameId: string,
-  turn: number,
-  egoIdx: number,
-  sims: number = 100,
-  depth: number = 3,
-  cpuct: number = 1.0,
-): Promise<MctsResponse> {
-  const url = `/api/mcts?game_id=${encodeURIComponent(gameId)}&turn=${turn}&ego_idx=${egoIdx}&sims=${sims}&depth=${depth}&cpuct=${cpuct}`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as MctsResponse
-}
-
-export async function fetchMctsAll(
-  gameId: string,
-  turn: number,
-  sims: number = 100,
-  depth: number = 3,
-  cpuct: number = 1.0,
-): Promise<MctsAllResponse> {
-  const url = `/api/mcts_all?game_id=${encodeURIComponent(gameId)}&turn=${turn}&sims=${sims}&depth=${depth}&cpuct=${cpuct}`
-  const res = await fetch(url)
-  if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as MctsAllResponse
-}
-
-export async function simulateTurn(state: Turn, moves: Record<string, number>): Promise<Turn> {
-  const res = await fetch('/api/simulate', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ state, moves }),
-  })
-  if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as Turn
 }
 
 // Debug game types
@@ -229,58 +145,6 @@ export type DebugSnakeState = {
   health: number
   body: Point[]
   alive: boolean
-}
-
-export type DebugSnakeTree = {
-  snake_id: string
-  snake_idx: number
-  best_move: number
-  root?: DebugMCTSNode
-}
-
-export type DebugTurnData = {
-  game_id: string
-  model_path: string
-  turn: number
-  sims: number
-  cpuct: number
-  state?: DebugGameState
-  // V1: Separate tree per snake (deprecated)
-  trees?: DebugSnakeTree[]
-  // V2: Single shared tree that alternates between snakes
-  snake_order?: string[]
-  tree?: DebugMCTSNode
-  chosen_path?: number[]
-}
-
-export type DebugGameSummary = {
-  game_id: string
-  model_path: string
-  turn_count: number
-  sims: number
-  cpuct: number
-  file_name: string
-}
-
-export type DebugGameResponse = {
-  game_id: string
-  model_path: string
-  turn_count: number
-  sims: number
-  cpuct: number
-  turns: DebugTurnData[]
-}
-
-export async function fetchDebugGames(): Promise<DebugGameSummary[]> {
-  const res = await fetch('/api/debug_games')
-  if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as DebugGameSummary[]
-}
-
-export async function fetchDebugGame(gameId: string): Promise<DebugGameResponse> {
-  const res = await fetch(`/api/debug_games/${encodeURIComponent(gameId)}`)
-  if (!res.ok) throw new Error(await res.text())
-  return (await res.json()) as DebugGameResponse
 }
 
 // Run inference request/response types

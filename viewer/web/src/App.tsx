@@ -2,7 +2,6 @@ import { Link, Route, Routes } from 'react-router-dom'
 import GamesPage from './pages/GamesPage'
 import GamePage from './pages/GamePage'
 import StatsPage from './pages/StatsPage'
-import DebugGamePage from './pages/DebugGamePage'
 
 export default function App() {
   return (
@@ -17,7 +16,6 @@ export default function App() {
         <Routes>
           <Route path="/" element={<GamesPage />} />
           <Route path="/game/:gameId" element={<GamePage />} />
-          <Route path="/debug/:gameId" element={<DebugGamePage />} />
           <Route path="/stats" element={<StatsPage />} />
         </Routes>
       </main>

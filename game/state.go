@@ -1,3 +1,8 @@
+// Package game defines the core game state types for Battlesnake.
+//
+// These types represent the minimal state needed for rules evaluation and
+// neural network inference. The state is designed to be efficiently clonable
+// for MCTS tree exploration.
 package game
 
 // Point is a board coordinate.

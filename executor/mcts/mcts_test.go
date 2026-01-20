@@ -1,8 +1,8 @@
+// Package mcts tests - verifies SimultaneousSearch for multi-snake MCTS.
 package mcts
 
 import (
 	"context"
-	"math/rand"
 	"testing"
 
 	"github.com/brensch/snek2/game"
@@ -21,12 +21,10 @@ func (m *MockInferenceClient) Predict(state *game.GameState) ([]float32, []float
 	return policies, values, nil
 }
 
-func TestSearch(t *testing.T) {
+func TestSimultaneousSearch(t *testing.T) {
 	// Setup
 	client := &MockInferenceClient{}
 	config := Config{Cpuct: 1.0}
-	rng := rand.New(rand.NewSource(42))
-	mcts := MCTS{Config: config, Client: client, Rng: rng}
 
 	// Create a simple game state with two snakes
 	state := &game.GameState{
@@ -56,11 +54,11 @@ func TestSearch(t *testing.T) {
 		Food: []game.Point{{X: 2, Y: 2}},
 	}
 
-	// Run Search
+	// Run SimultaneousSearch
 	simulations := 10
-	root, _, err := mcts.Search(context.Background(), state, simulations)
+	root, snakeOrder, err := SimultaneousSearch(context.Background(), client, config, state, simulations)
 	if err != nil {
-		t.Fatalf("Search failed: %v", err)
+		t.Fatalf("SimultaneousSearch failed: %v", err)
 	}
 
 	// Assertions
@@ -68,13 +66,15 @@ func TestSearch(t *testing.T) {
 		t.Errorf("Expected VisitCount %d, got %d", simulations, root.VisitCount)
 	}
 
+	if len(snakeOrder) != 2 {
+		t.Errorf("Expected 2 snakes in order, got %d", len(snakeOrder))
+	}
+
 	// Check if children have visits
-	totalChildVisits := 0
 	childrenFound := 0
 	for _, child := range root.Children {
 		if child != nil {
 			childrenFound++
-			totalChildVisits += child.VisitCount
 		}
 	}
 
@@ -82,17 +82,22 @@ func TestSearch(t *testing.T) {
 		t.Errorf("Expected children, got none")
 	}
 
-	if totalChildVisits != simulations-1 {
-		t.Errorf("Expected sum of child visits %d, got %d", simulations-1, totalChildVisits)
+	// Extract results and verify policies exist
+	result := GetSimultaneousSearchResult(root, snakeOrder)
+	if len(result.Policies) == 0 {
+		t.Error("Expected policies in result")
+	}
+
+	// Check that we got a policy for the first snake
+	if _, ok := result.Policies["me"]; !ok {
+		t.Error("Expected policy for 'me' snake")
 	}
 }
 
-func BenchmarkSearch(b *testing.B) {
+func BenchmarkSimultaneousSearch(b *testing.B) {
 	// Setup
 	client := &MockInferenceClient{}
 	config := Config{Cpuct: 1.0}
-	rng := rand.New(rand.NewSource(42))
-	mcts := MCTS{Config: config, Client: client, Rng: rng}
 
 	// Create a simple game state with two snakes
 	state := &game.GameState{
@@ -124,9 +129,9 @@ func BenchmarkSearch(b *testing.B) {
 
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := mcts.Search(context.Background(), state, 800) // 800 simulations per search
+		_, _, err := SimultaneousSearch(context.Background(), client, config, state, 100)
 		if err != nil {
-			b.Fatalf("Search failed: %v", err)
+			b.Fatalf("SimultaneousSearch failed: %v", err)
 		}
 	}
 }
