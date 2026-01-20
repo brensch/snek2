@@ -152,3 +152,73 @@ docker-scraper-down:
 orchestrate-local:
 	bash infrastructure/pipeline/orchestrate_local.sh
 
+# Battlesnake API server
+BATTLESNAKE_BIN ?= bin/battlesnake
+BATTLESNAKE_PORT ?= 8000
+BATTLESNAKE_MCTS_SIMS ?= 10000
+
+$(BATTLESNAKE_BIN):
+	@mkdir -p $(@D)
+	go build -o $(BATTLESNAKE_BIN) ./battlesnake
+
+build-battlesnake: $(BATTLESNAKE_BIN)
+
+run-battlesnake: $(BATTLESNAKE_BIN)
+	export LD_LIBRARY_PATH=$(PWD):$$(find $(PWD)/.venv -name "lib" -type d | tr '\n' ':') && \
+	$(BATTLESNAKE_BIN) \
+		-listen :$(BATTLESNAKE_PORT) \
+		-model-path models/snake_net.onnx \
+		-sessions 1 \
+		-mcts-sims $(BATTLESNAKE_MCTS_SIMS)
+# Battlesnake CLI for local testing
+# Install CLI: go install github.com/BattlesnakeOfficial/rules/cli/battlesnake@latest
+BATTLESNAKE_CLI ?= $(HOME)/go/bin/battlesnake
+
+# Run a test game with our snake vs itself (requires run-battlesnake running on port 8000)
+# Usage: make battlesnake-test
+# Or with custom snakes: make battlesnake-test SNAKE_URLS="http://localhost:8000 http://localhost:8001"
+SNAKE_URLS ?= http://localhost:8000 http://localhost:8000
+SNAKE_NAMES ?= snek2-1 snek2-2
+
+.PHONY: install-battlesnake-cli
+install-battlesnake-cli:
+	go install github.com/BattlesnakeOfficial/rules/cli/battlesnake@latest
+
+.PHONY: battlesnake-test
+battlesnake-test:
+	@echo "Running Battlesnake game..."
+	@echo "Make sure your snake server(s) are running!"
+	$(BATTLESNAKE_CLI) play \
+		$(foreach url,$(SNAKE_URLS),-u $(url)) \
+		$(foreach name,$(SNAKE_NAMES),-n $(name)) \
+		--width 11 --height 11 \
+		--timeout 500 \
+		--viewmap --color
+
+# Run a game and view in browser
+.PHONY: battlesnake-test-browser
+battlesnake-test-browser:
+	@echo "Running Battlesnake game with browser view..."
+	@echo "Make sure your snake server(s) are running!"
+	$(BATTLESNAKE_CLI) play \
+		$(foreach url,$(SNAKE_URLS),-u $(url)) \
+		$(foreach name,$(SNAKE_NAMES),-n $(name)) \
+		--width 11 --height 11 \
+		--timeout 500 \
+		--browser
+
+# Run multiple games and count wins
+# Usage: make battlesnake-bench GAMES=10
+GAMES ?= 10
+.PHONY: battlesnake-bench
+battlesnake-bench:
+	@echo "Running $(GAMES) Battlesnake games..."
+	@wins=0; \
+	for i in $$(seq 1 $(GAMES)); do \
+		result=$$($(BATTLESNAKE_CLI) play \
+			$(foreach url,$(SNAKE_URLS),-u $(url)) \
+			$(foreach name,$(SNAKE_NAMES),-n $(name)) \
+			--width 11 --height 11 \
+			--timeout 500 2>&1 | tail -1); \
+		echo "Game $$i: $$result"; \
+	done
